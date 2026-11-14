@@ -5,6 +5,20 @@ Migration file: `supabase/migrations/0003_phase2_support_platform.sql`
 `0001_phase1_workspaces.sql` or `0002_fix_rls_recursion.sql`, deletes no
 data, and never disables RLS.
 
+## 0004 — RPC fix (live failure, 2026-11-14)
+
+`supabase/migrations/0004_phase2_fix_widget_rpcs.sql` re-creates the 5
+SECURITY DEFINER RPCs from 0003 with identical logic, except pgcrypto
+calls are schema-qualified (`extensions.digest(...)`,
+`extensions.gen_random_bytes(...)`). 0003 partially applied live:
+tables, triggers, RLS and policies applied fine, but the RPC batch
+failed and rolled back with `ERROR 42883: function digest(text, unknown)
+does not exist`, because pgcrypto is installed in the `extensions`
+schema on this project, not `public`, and the RPCs set
+`search_path = public`. 0 of the 5 RPCs existed live; no data was
+touched. 0004 is idempotent (`create or replace function`) and safe to
+re-run. 0003 itself was not edited. Apply 0004 after 0003 (step 4 below).
+
 ## How to apply
 
 In Supabase Dashboard > SQL Editor, run the migrations **in order**:
@@ -12,6 +26,8 @@ In Supabase Dashboard > SQL Editor, run the migrations **in order**:
 1. `0001_phase1_workspaces.sql`
 2. `0002_fix_rls_recursion.sql`
 3. `0003_phase2_support_platform.sql`
+4. `0004_phase2_fix_widget_rpcs.sql` (re-creates the 5 RPCs from 0003
+   with `extensions.`-qualified pgcrypto calls — see the 0004 note above)
 
 The file is idempotent (safe to re-run): `create table if not exists`,
 `create index if not exists`, `drop policy if exists` before every
@@ -277,6 +293,9 @@ column by design (append-only / externally managed).
   workspace) and the RLS mechanism level in Phase 1 — not by two real
   users exercising these Phase 2 tables live. Do not claim it passed
   until that test runs.
-- The migration has been written and reviewed as SQL only; it has not
-  been applied to live Supabase or executed against a database in this
-  step. The parent applies it live later.
+- 0003 was partially applied to live Supabase on 2026-11-14 (tables,
+  triggers, RLS and policies live; the RPC batch failed with error
+  42883 and was superseded by 0004 — see the 0004 note above). 0004 has
+  been written and reviewed as SQL only; it has not been applied to live
+  Supabase or executed against a database in this step. The parent
+  applies it live later.
