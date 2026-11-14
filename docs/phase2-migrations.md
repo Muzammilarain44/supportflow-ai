@@ -1,0 +1,282 @@
+# Phase 2 Migrations — Support Platform
+
+Migration file: `supabase/migrations/0003_phase2_support_platform.sql`
+(one file, clearly sectioned). It is additive only: it does not touch
+`0001_phase1_workspaces.sql` or `0002_fix_rls_recursion.sql`, deletes no
+data, and never disables RLS.
+
+## How to apply
+
+In Supabase Dashboard > SQL Editor, run the migrations **in order**:
+
+1. `0001_phase1_workspaces.sql`
+2. `0002_fix_rls_recursion.sql`
+3. `0003_phase2_support_platform.sql`
+
+The file is idempotent (safe to re-run): `create table if not exists`,
+`create index if not exists`, `drop policy if exists` before every
+`create policy`, `drop trigger if exists` before every `create trigger`,
+and `create or replace function` for all functions.
+
+## Tables
+
+All tables live in the `public` schema, carry `workspace_id uuid NOT NULL
+REFERENCES workspaces(id) ON DELETE CASCADE`, and use
+`id uuid PRIMARY KEY DEFAULT gen_random_uuid()`. Timestamps are
+`timestamptz NOT NULL DEFAULT now()` unless noted.
+
+### customers
+One row per end-customer of a workspace.
+`full_name text NOT NULL` (trimmed, min 2 chars), `email text NOT NULL`,
+`phone text NULL`, `tags text[] NOT NULL DEFAULT '{}'`, `notes text NULL`,
+`created_at`, `updated_at`, `last_activity_at timestamptz NULL`.
+Email is unique per workspace, case-insensitively:
+`UNIQUE INDEX (workspace_id, lower(email))`.
+Indexes: `(workspace_id)`, `(workspace_id, created_at DESC)`.
+
+### conversations
+One chat thread between a workspace and a customer.
+`customer_id uuid NOT NULL FK customers ON DELETE CASCADE`,
+`status text NOT NULL DEFAULT 'open'` in
+`open | pending | resolved | closed`,
+`priority text NOT NULL DEFAULT 'medium'` in
+`low | medium | high | urgent`,
+`assigned_to uuid NULL REFERENCES auth.users(id) ON DELETE SET NULL`,
+`tags text[] NOT NULL DEFAULT '{}'`, `created_at`, `updated_at`,
+`last_message_at timestamptz NULL`.
+Indexes: `(workspace_id, last_message_at DESC NULLS LAST)`,
+`(workspace_id, status)`, `(workspace_id, assigned_to)`, `(customer_id)`.
+
+### messages
+One message inside a conversation.
+`conversation_id uuid NOT NULL FK conversations ON DELETE CASCADE`,
+`customer_id uuid NULL FK customers ON DELETE SET NULL`,
+`sender_type text NOT NULL` in `customer | agent | system`,
+`sender_id uuid NULL` (auth user id for agents, NULL for customers),
+`body text NOT NULL CHECK (char_length(body) BETWEEN 1 AND 5000)`,
+`client_message_id text NULL` (client-supplied idempotency key),
+`created_at`, `read_at timestamptz NULL`.
+Duplicate prevention: `UNIQUE INDEX (conversation_id, client_message_id)
+WHERE client_message_id IS NOT NULL` — a retried send with the same key
+cannot create a second row in the same conversation.
+Indexes: `(conversation_id, created_at)`, `(workspace_id, created_at DESC)`.
+
+### tickets
+Support tickets, optionally linked to a customer and/or a conversation.
+`customer_id uuid NULL FK customers ON DELETE SET NULL`,
+`conversation_id uuid NULL FK conversations ON DELETE SET NULL`,
+`subject text NOT NULL` (trimmed, 2–200 chars), `description text NULL`,
+`category text NOT NULL DEFAULT 'general'` in
+`general | billing | technical | feature | bug | other`,
+`priority text NOT NULL DEFAULT 'medium'` in
+`low | medium | high | urgent`,
+`status text NOT NULL DEFAULT 'open'` in
+`open | in_progress | waiting_for_customer | resolved | closed`,
+`assigned_to uuid NULL REFERENCES auth.users(id) ON DELETE SET NULL`,
+`created_by uuid NULL REFERENCES auth.users(id) ON DELETE SET NULL`,
+`created_at`, `updated_at`, `resolved_at timestamptz NULL`.
+Indexes: `(workspace_id, status)`, `(workspace_id, priority)`,
+`(workspace_id, assigned_to)`, `(workspace_id, created_at DESC)`,
+`(customer_id)`, `(conversation_id)`.
+
+### ticket_events
+Audit trail for tickets (one row per change/note).
+`ticket_id uuid NOT NULL FK tickets ON DELETE CASCADE`,
+`actor_id uuid NULL REFERENCES auth.users(id) ON DELETE SET NULL`,
+`event_type text NOT NULL` in
+`created | status_changed | priority_changed | assigned | unassigned |
+note_added | comment_added | resolved | reopened | updated`,
+`field_name text NULL`, `old_value text NULL`, `new_value text NULL`,
+`note text NULL`, `created_at`.
+Index: `(ticket_id, created_at)`.
+
+### conversation_notes
+Internal agent notes on a conversation. Never shown to customers.
+`conversation_id uuid NOT NULL FK conversations ON DELETE CASCADE`,
+`author_id uuid NULL REFERENCES auth.users(id) ON DELETE SET NULL`,
+`body text NOT NULL CHECK (char_length(body) BETWEEN 1 AND 5000)`,
+`created_at`, `updated_at`.
+Index: `(conversation_id, created_at)`.
+
+### widget_settings
+One embeddable chat widget per workspace.
+`workspace_id uuid NOT NULL UNIQUE FK workspaces ON DELETE CASCADE`,
+`public_key text NOT NULL UNIQUE` — format `wgt_` + 32 lowercase hex
+chars, default `'wgt_' || encode(gen_random_bytes(16), 'hex')`,
+`enabled boolean NOT NULL DEFAULT true`,
+`business_name text NOT NULL DEFAULT 'Support'`,
+`welcome_message text NOT NULL DEFAULT 'Hi! How can we help you today?'`,
+`primary_color text NOT NULL DEFAULT '#7C3AED'`,
+`allowed_origins text[] NOT NULL DEFAULT '{}'`,
+`created_at`, `updated_at`.
+The `public_key` is a **public identifier only** — it grants no data
+access by itself. Visitor data access goes only through the guest RPCs
+below, which validate the session token hash. (The UNIQUE constraint
+creates the index on `public_key`.)
+
+### widget_visitor_sessions
+Guest chat sessions for the website widget.
+`widget_settings_id uuid NOT NULL FK widget_settings ON DELETE CASCADE`,
+`visitor_token_hash text NOT NULL UNIQUE` — the SHA-256 hex of the raw
+visitor token. **The raw token is NEVER stored in the database.**
+`customer_id uuid NULL FK customers ON DELETE SET NULL`,
+`conversation_id uuid NULL FK conversations ON DELETE SET NULL`,
+`expires_at timestamptz NOT NULL` (24 hours after creation),
+`created_at`, `last_seen_at timestamptz NULL`.
+Indexes: `(workspace_id, expires_at)`; the UNIQUE constraint on
+`visitor_token_hash` provides its index.
+
+### automation_events (transactional outbox — Phase 3 n8n-ready)
+Record only. **No webhooks are sent from the database.**
+`event_type text NOT NULL` in
+`customer.message.created | conversation.created | ticket.created |
+ticket.priority.changed | ticket.assigned | ticket.resolved`,
+`entity_type text NOT NULL`, `entity_id uuid NOT NULL`,
+`payload jsonb NOT NULL DEFAULT '{}'::jsonb`,
+`status text NOT NULL DEFAULT 'pending'` in
+`pending | processing | processed | failed | dead`,
+`attempts int NOT NULL DEFAULT 0`,
+`created_at`, `processed_at timestamptz NULL`.
+Indexes: `(status, created_at)`, `(workspace_id, created_at DESC)`.
+
+**Payload rule (enforced in the database):** payload may contain ids,
+slugs, and status/priority values ONLY. It must NOT contain message
+bodies, emails, or phone numbers. A CHECK constraint rejects payloads
+containing any of the keys `body`, `email`, `phone`, `phone_number`,
+`message`, `content`.
+
+## Cross-workspace safety
+
+Foreign keys alone cannot stop a row in workspace A from pointing at a
+customer/conversation/ticket in workspace B (the referenced row exists,
+just in the wrong workspace). One generic trigger function closes that
+gap:
+
+- `public.enforce_workspace_consistency()` — plain PL/pgSQL trigger
+  function (not SECURITY DEFINER; triggers run as the table owner and
+  bypass RLS, so its lookups are not policy-filtered). It branches on
+  `TG_TABLE_NAME` and raises an exception on any workspace mismatch.
+- BEFORE INSERT OR UPDATE triggers on: `conversations` (customer),
+  `messages` (conversation + customer when set), `tickets` (customer +
+  conversation when set), `ticket_events` (ticket),
+  `conversation_notes` (conversation), `widget_visitor_sessions`
+  (widget_settings + customer/conversation when set).
+- `customers` has no parent row, so no trigger applies to it.
+
+## RLS model
+
+- RLS is enabled on **all nine** new tables.
+- Membership is checked **only** through the Phase 1 SECURITY DEFINER
+  helper `public.is_workspace_member(uuid)` (`set search_path = public`,
+  `STABLE`, granted to `authenticated` only — re-asserted idempotently
+  at the top of 0003, never re-created). **No policy queries
+  `workspace_members` directly** — that caused the infinite recursion
+  fixed by 0002. No `USING (true)` policy exists anywhere.
+- Member tables — `customers`, `conversations`, `messages`, `tickets`,
+  `ticket_events`, `conversation_notes` — get SELECT / INSERT / UPDATE /
+  DELETE policies, each gated on
+  `public.is_workspace_member(<table>.workspace_id)` (INSERT uses
+  `WITH CHECK`, UPDATE uses both `USING` and `WITH CHECK`).
+- `widget_settings` — member-only SELECT / INSERT / UPDATE. No DELETE
+  policy (settings disappear with the workspace via ON DELETE CASCADE).
+  No public/anon access; the widget reads config only through
+  `get_widget_config()`.
+- `widget_visitor_sessions` — **intentionally no policies at all**.
+  RLS is enabled, so every direct SELECT / INSERT / UPDATE / DELETE by
+  `anon` or `authenticated` is denied by default. Visitor access goes
+  only through the SECURITY DEFINER RPCs below.
+- `automation_events` — member SELECT only (read-only for members).
+  No direct INSERT / UPDATE / DELETE policy: rows are written only by
+  `record_automation_event()` and the widget RPCs (SECURITY DEFINER,
+  bypassing RLS). Phase 3 status updates are a service-role concern,
+  not a member policy.
+
+## Guest RPCs (SECURITY DEFINER, `set search_path = public`)
+
+All are revoked from `public` and granted only to the roles listed.
+Each validates workspace consistency itself.
+
+### record_automation_event(p_workspace_id, p_event_type, p_entity_type, p_entity_id, p_payload jsonb DEFAULT '{}') → uuid
+Grant: `authenticated` only. Caller must be signed in **and** a member
+of the workspace (`is_workspace_member` check inside the function).
+Validates `p_event_type` against the allowed list, inserts one outbox
+row, returns its id. Used by the backend when it creates/updates
+tickets and conversations.
+
+### create_widget_visitor_session(p_public_key, p_visitor_name DEFAULT NULL, p_visitor_email DEFAULT NULL) → TABLE(session_token text, conversation_id uuid, customer_id uuid, expires_at timestamptz)
+Grant: `anon`, `authenticated`. Looks up `widget_settings` by
+`public_key`; raises if the key is unknown or the widget is disabled.
+If an email is given, reuses the existing customer in that workspace
+with a case-insensitive email match; otherwise creates a customer.
+Without an email the customer gets a placeholder address
+`visitor-<hex>@widget.local` (because `customers.email` is NOT NULL).
+Creates a fresh open conversation and a session expiring in 24 hours.
+Generates a random token (`gen_random_bytes(32)`, hex-encoded), stores
+**only** `encode(digest(token, 'sha256'), 'hex')`, and returns the
+**raw token exactly once** — the caller must hand it to the visitor
+(e.g. cookie / localStorage). The raw token is never stored and cannot
+be recovered from the database afterwards. If the visitor loses it,
+they must start a new session.
+
+### post_widget_visitor_message(p_token text, p_body text) → uuid
+Grant: `anon`, `authenticated`. Hashes the token (SHA-256) and finds a
+non-expired session; raises `Invalid or expired session` otherwise.
+Validates the body (trimmed, 1–5000 chars), inserts a `customer`
+message into the session's conversation, updates
+`conversations.last_message_at` and the session's `last_seen_at`, and
+records an `automation_events` row (`customer.message.created`,
+payload with ids only — no message body). Returns the new message id.
+
+### get_widget_visitor_history(p_token text) → TABLE(message_id uuid, sender_type text, body text, created_at timestamptz)
+Grant: `anon`, `authenticated`. Hashes the token and returns **only**
+that session's conversation messages, oldest first. Returns zero rows
+for an unknown or expired token (it does not reveal whether the token
+ever existed).
+
+### get_widget_config(p_public_key text) → TABLE(business_name text, welcome_message text, primary_color text, enabled boolean)
+Grant: `anon`, `authenticated`. Returns the public display config only.
+No secrets, no workspace ids, no member data. Returns zero rows for an
+unknown key.
+
+## updated_at triggers
+
+`public.set_updated_at()` (from 0001) is attached to `customers`,
+`conversations`, `tickets`, `conversation_notes`, and
+`widget_settings`. `messages`, `ticket_events`,
+`widget_visitor_sessions`, and `automation_events` have no `updated_at`
+column by design (append-only / externally managed).
+
+## The outbox pattern (how Phase 3 will consume automation_events)
+
+1. **Poll:** a Phase 3 worker (n8n or a small service, service-role
+   key) selects rows where `status = 'pending'` ordered by
+   `created_at`, oldest first, in small batches.
+2. **Claim:** for each row, atomically set
+   `status = 'processing'` (e.g. `UPDATE ... WHERE id = $1 AND
+   status = 'pending' RETURNING *`) so two workers never process the
+   same event. Only the worker that wins the claim proceeds.
+3. **Deliver:** call the n8n webhook / handler with the event id and
+   payload. The payload contains ids, slugs, and status/priority
+   values only — the handler fetches any display data it needs through
+   the API with proper auth; it never trusts the payload for content.
+4. **Acknowledge:** on success set `status = 'processed'` and
+   `processed_at = now()`. On a transient failure set
+   `status = 'failed'`, increment `attempts`, and retry later with
+   backoff; after the retry budget is exhausted set `status = 'dead'`
+   for manual inspection.
+5. **Idempotency:** the event `id` is the idempotency key. Handlers
+   must dedupe on it — a row claimed but never acknowledged (worker
+   crash) will be re-polled, so the same event id can legitimately be
+   delivered twice.
+
+## Known limitations
+
+- **True two-user isolation test is still pending.** The Supabase
+  email rate limit blocked creating a second test user, so cross-user
+  isolation has been proven only at the API level (403 for a foreign
+  workspace) and the RLS mechanism level in Phase 1 — not by two real
+  users exercising these Phase 2 tables live. Do not claim it passed
+  until that test runs.
+- The migration has been written and reviewed as SQL only; it has not
+  been applied to live Supabase or executed against a database in this
+  step. The parent applies it live later.

@@ -1,22 +1,26 @@
 import { useState } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
-import { BarChart3, ChevronLeft, ChevronRight, Inbox, BookOpen, LayoutDashboard, LogOut, Settings, Ticket, Users, Workflow, Zap } from 'lucide-react';
+import { BarChart3, ChevronLeft, ChevronRight, Inbox, BookOpen, LayoutDashboard, LogOut, MessageSquare, Settings, Ticket, Users, Workflow, Zap } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { useWorkspace } from '../context/WorkspaceContext';
 
 const nav = [
   { to: '/', label: 'Overview', icon: LayoutDashboard, phase1: true },
-  { to: '/inbox', label: 'Inbox', icon: Inbox, phase1: false },
-  { to: '/tickets', label: 'Tickets', icon: Ticket, phase1: false },
+  { to: '/inbox', label: 'Inbox', icon: Inbox, phase1: true },
+  { to: '/tickets', label: 'Tickets', icon: Ticket, phase1: true },
+  { to: '/customers', label: 'Customers', icon: Users, phase1: true },
   { to: '/knowledge', label: 'Knowledge Base', icon: BookOpen, phase1: false },
   { to: '/automations', label: 'Automations', icon: Workflow, phase1: false },
   { to: '/analytics', label: 'Analytics', icon: BarChart3, phase1: false },
-  { to: '/team', label: 'Team', icon: Users, phase1: false },
+  { to: '/team', label: 'Team', icon: Users, phase1: true },
+  { to: '/widget-demo', label: 'Chat Widget', icon: MessageSquare, phase1: true },
   { to: '/settings', label: 'Settings', icon: Settings, phase1: true },
 ];
 export default function Layout() {
   const [collapsed, setCollapsed] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const { user, signOut } = useAuth();
+  const { workspaces, workspaceId, setWorkspaceId } = useWorkspace();
   const navigate = useNavigate();
   return (
     <div className="flex min-h-screen bg-navy">
@@ -39,8 +43,26 @@ export default function Layout() {
         </button>
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex items-center justify-between border-b border-slate-800 bg-sidebar px-4 py-3">
-          <span className="text-sm font-medium text-slate-300">Phase 1 — Foundation</span>
+        <header className="flex items-center justify-between gap-3 border-b border-slate-800 bg-sidebar px-4 py-3">
+          <div className="flex min-w-0 items-center gap-3">
+            <span className="hidden text-sm font-medium text-slate-300 sm:block">Workspace</span>
+            {workspaces.length > 0 ? (
+              <select
+                value={workspaceId ?? ''}
+                onChange={(e) => setWorkspaceId(e.target.value)}
+                aria-label="Select workspace"
+                className="max-w-48 truncate rounded-lg border border-slate-600 bg-navy px-2 py-1.5 text-sm text-white focus:border-primary focus:outline-none sm:max-w-64"
+              >
+                {workspaces.map((w) => (
+                  <option key={w.id} value={w.id}>{w.name}</option>
+                ))}
+              </select>
+            ) : (
+              <button onClick={() => navigate('/onboarding')} className="rounded-lg bg-primary px-3 py-1.5 text-sm text-white hover:bg-purple-600">
+                Create workspace
+              </button>
+            )}
+          </div>
           <div className="relative">
             <button onClick={() => setMenuOpen(!menuOpen)} className="flex items-center gap-2 rounded-lg bg-card px-3 py-2 text-sm text-white hover:bg-slate-700" aria-haspopup="menu" aria-expanded={menuOpen}>
               <span className="flex h-7 w-7 items-center justify-center rounded-full bg-primary text-xs font-bold">{(user?.email ?? '?')[0].toUpperCase()}</span>

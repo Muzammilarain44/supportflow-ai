@@ -1,53 +1,152 @@
 import { useQuery } from '@tanstack/react-query';
-import { Bot, Inbox, Plus, Ticket } from 'lucide-react';
+import { Bot, Inbox, Link as LinkIcon, Plus, Ticket } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { api } from '../lib/api';
+import { useWorkspace } from '../context/WorkspaceContext';
+import { EmptyState, NoWorkspaceState, Skeleton } from '../components/ui';
 
-const cards = [
-  { label: 'Total tickets', value: '—', note: 'No tickets yet — Phase 2 adds ticket management.' },
-  { label: 'Open tickets', value: '—', note: 'No open tickets — empty state.' },
-  { label: 'Average response time', value: '—', note: 'No conversations yet — Phase 2.' },
-  { label: 'AI resolution rate', value: '—', note: 'AI agent arrives in Phase 4 — demo preview only.' },
-];
+function timeAgo(iso: string | null | undefined): string {
+  if (!iso) return '';
+  const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
 export default function Dashboard() {
-  const { data, isLoading, isError, error } = useQuery({ queryKey: ['workspaces'], queryFn: api.listWorkspaces });
+  const { workspaceId, workspace, loading: wsLoading } = useWorkspace();
+  const enabled = !!workspaceId;
+  const statsQ = useQuery({
+    queryKey: ['ticket-stats', workspaceId],
+    queryFn: () => api.getTicketStats(workspaceId!),
+    enabled,
+  });
+  const customersQ = useQuery({
+    queryKey: ['customers-total', workspaceId],
+    queryFn: () => api.listCustomers(workspaceId!, { page: 1, pageSize: 1 }),
+    enabled,
+  });
+  const convsQ = useQuery({
+    queryKey: ['conversations-open', workspaceId],
+    queryFn: () => api.listConversations(workspaceId!, { page: 1, pageSize: 1, status: 'open' }),
+    enabled,
+  });
+  const recentTicketsQ = useQuery({
+    queryKey: ['recent-tickets', workspaceId],
+    queryFn: () => api.listTickets(workspaceId!, { page: 1, pageSize: 5 }),
+    enabled,
+  });
+  const recentConvsQ = useQuery({
+    queryKey: ['recent-conversations', workspaceId],
+    queryFn: () => api.listConversations(workspaceId!, { page: 1, pageSize: 5 }),
+    enabled,
+  });
+
+  const stats = statsQ.data;
+  const openTickets = stats
+    ? (stats.by_status.open ?? 0) + (stats.by_status.in_progress ?? 0) + (stats.by_status.waiting_for_customer ?? 0)
+    : 0;
+  const loading = wsLoading || statsQ.isLoading || customersQ.isLoading || convsQ.isLoading;
+  const error = statsQ.error ?? customersQ.error ?? convsQ.error;
+  const cards = [
+    { label: 'Total tickets', value: stats ? String(stats.total) : '0', note: 'All tickets in this workspace.' },
+    { label: 'Open tickets', value: stats ? String(openTickets) : '0', note: 'Open, in progress or waiting for customer.' },
+    { label: 'Total customers', value: String(customersQ.data?.total ?? 0), note: 'Customers in this workspace.' },
+    { label: 'Open conversations', value: String(convsQ.data?.total ?? 0), note: 'Conversations currently open.' },
+  ];
+  const recentTickets = recentTicketsQ.data?.tickets ?? [];
+  const recentConvs = recentConvsQ.data?.conversations ?? [];
+  const hasActivity = recentTickets.length > 0 || recentConvs.length > 0;
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div><h1 className="text-2xl font-bold text-white">Overview</h1><p className="text-sm text-slate-400">Your workspace at a glance. Metrics appear once real tickets exist.</p></div>
-        <Link to="/onboarding" className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-white hover:bg-purple-600"><Plus className="h-4 w-4" /> New workspace</Link>
+        <div>
+          <h1 className="text-2xl font-bold text-white">Overview</h1>
+          <p className="text-sm text-slate-400">
+            {workspace ? `Workspace: ${workspace.name}` : 'Your workspace at a glance — real numbers, no invented metrics.'}
+          </p>
+        </div>
+        <Link to="/onboarding" className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-white hover:bg-purple-600">
+          <Plus className="h-4 w-4" /> New workspace
+        </Link>
       </div>
-      {isLoading && <p className="text-slate-400">Loading workspaces…</p>}
-      {isError && <div className="rounded-xl border border-danger/50 bg-danger/10 p-4 text-sm text-red-300" role="alert">Could not load workspaces: {(error as Error).message}. Check the API is running and your Supabase keys are set.</div>}
-      {data && <p className="text-sm text-slate-400">You belong to {(data.workspaces ?? []).length} workspace(s). {(data.workspaces ?? []).map((w: { name: string }) => w.name).join(', ') || 'Create your first workspace to get started.'}</p>}
+
+      {!workspaceId && !wsLoading && <NoWorkspaceState />}
+
+      {error && (
+        <div className="rounded-xl border border-danger/50 bg-danger/10 p-4 text-sm text-red-300" role="alert">
+          Could not load workspace data: {(error as Error).message}
+        </div>
+      )}
+
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {cards.map((c) => (
-          <div key={c.label} className="rounded-xl border border-slate-700/60 bg-card p-5">
-            <p className="text-sm text-slate-400">{c.label}</p>
-            <p className="mt-2 text-3xl font-bold text-white">{c.value}</p>
-            <p className="mt-1 text-xs text-slate-500">{c.note}</p>
-          </div>
-        ))}
+        {loading
+          ? [0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-28" />)
+          : cards.map((c) => (
+              <div key={c.label} className="rounded-xl border border-slate-700/60 bg-card p-5">
+                <p className="text-sm text-slate-400">{c.label}</p>
+                <p className="mt-2 text-3xl font-bold text-white">{c.value}</p>
+                <p className="mt-1 text-xs text-slate-500">{c.note}</p>
+              </div>
+            ))}
       </div>
+
       <div className="grid gap-4 lg:grid-cols-2">
         <div className="rounded-xl border border-slate-700/60 bg-card p-5">
-          <h2 className="font-semibold text-white">Recent activity</h2>
-          <p className="mt-3 flex items-center gap-2 text-sm text-slate-400"><Inbox className="h-4 w-4" /> No activity yet — this section fills in once conversations and tickets exist (Phase 2).</p>
+          <h2 className="font-semibold text-white">AI resolution rate</h2>
+          <p className="mt-2 text-3xl font-bold text-white">—</p>
+          <p className="mt-1 text-xs text-slate-500">AI agent arrives in Phase 4 — demo preview only.</p>
         </div>
         <div className="rounded-xl border border-slate-700/60 bg-card p-5">
-          <h2 className="font-semibold text-white">Ticket trends</h2>
-          <p className="mt-3 text-sm text-slate-400">Chart placeholder — clearly labelled demo preview. Real charts arrive with Analytics (Phase 5); no data is invented.</p>
-          <div className="mt-4 flex h-32 items-end gap-2" aria-hidden="true">{[30, 55, 40, 70, 50].map((h, i) => (<div key={i} className="flex-1 rounded-t bg-primary/25" style={{ height: `${h}%` }} />))}</div>
+          <h2 className="font-semibold text-white">Recent activity</h2>
+          {!enabled || (!recentTicketsQ.isLoading && !recentConvsQ.isLoading && !hasActivity) ? (
+            <p className="mt-3 flex items-center gap-2 text-sm text-slate-400">
+              <Inbox className="h-4 w-4" /> No activity yet — this section fills in once conversations and tickets exist (Phase 2).
+            </p>
+          ) : (
+            <ul className="mt-3 space-y-2">
+              {recentTickets.map((t) => (
+                <li key={`t-${t.id}`} className="flex items-center gap-2 text-sm">
+                  <Ticket className="h-4 w-4 shrink-0 text-primary" />
+                  <Link to={`/tickets/${t.id}`} className="min-w-0 flex-1 truncate text-slate-200 hover:underline">
+                    {t.subject}
+                  </Link>
+                  <span className="shrink-0 text-xs text-slate-500">{timeAgo(t.updated_at)}</span>
+                </li>
+              ))}
+              {recentConvs.map((c) => (
+                <li key={`c-${c.id}`} className="flex items-center gap-2 text-sm">
+                  <LinkIcon className="h-4 w-4 shrink-0 text-primary" />
+                  <Link to={`/inbox/${c.id}`} className="min-w-0 flex-1 truncate text-slate-200 hover:underline">
+                    {c.customer?.full_name ?? 'Conversation'} — {c.last_message?.body ?? 'No messages yet'}
+                  </Link>
+                  <span className="shrink-0 text-xs text-slate-500">{timeAgo(c.last_message_at ?? c.created_at)}</span>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       </div>
+
       <div className="rounded-xl border border-slate-700/60 bg-card p-5">
         <h2 className="font-semibold text-white">Quick actions</h2>
         <div className="mt-3 flex flex-wrap gap-3">
-          <Link to="/onboarding" className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm text-white"><Plus className="h-4 w-4" /> Create workspace</Link>
-          <span className="flex items-center gap-2 rounded-lg bg-slate-700 px-4 py-2 text-sm text-slate-400" title="Phase 2"><Ticket className="h-4 w-4" /> New ticket — Phase 2</span>
-          <span className="flex items-center gap-2 rounded-lg bg-slate-700 px-4 py-2 text-sm text-slate-400" title="Phase 4"><Bot className="h-4 w-4" /> AI agent — Phase 4</span>
+          <Link to="/tickets" className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm text-white">
+            <Plus className="h-4 w-4" /> New ticket
+          </Link>
+          <Link to="/customers" className="flex items-center gap-2 rounded-lg bg-slate-700 px-4 py-2 text-sm text-white hover:bg-slate-600">
+            Customers
+          </Link>
+          <span className="flex items-center gap-2 rounded-lg bg-slate-700 px-4 py-2 text-sm text-slate-400" title="Phase 4">
+            <Bot className="h-4 w-4" /> AI agent — Phase 4
+          </span>
         </div>
       </div>
+
+      {!hasActivity && <EmptyState title="Nothing here yet" description="Tickets and conversations you create will show up on this page with real counts — nothing is invented." />}
     </div>
   );
 }

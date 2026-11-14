@@ -2,7 +2,14 @@ import express, { type Express } from 'express';
 import cors from 'cors';
 import type { Env } from './env.js';
 import { authMiddleware } from './middleware/auth.js';
+import { rateLimit } from './middleware/rateLimit.js';
+import { requireWorkspaceMember } from './middleware/workspaceAuth.js';
 import { workspacesRouter } from './routes/workspaces.js';
+import { customersRouter } from './routes/customers.js';
+import { conversationsRouter } from './routes/conversations.js';
+import { ticketsRouter } from './routes/tickets.js';
+import { widgetSettingsRouter } from './routes/widgetSettings.js';
+import { widgetRouter } from './routes/widget.js';
 import { errorHandler, notFound } from './errors.js';
 import { logger } from './logger.js';
 
@@ -11,8 +18,25 @@ export function createApp(env: Env): Express {
   app.use(cors({ origin: env.FRONTEND_URL, credentials: true }));
   app.use(express.json({ limit: '1mb' }));
   app.use((req, _res, next) => { logger.info(`${req.method} ${req.path}`); next(); });
-  app.get('/health', (_req, res) => res.json({ status: 'ok', service: 'supportflow-api', version: '0.1.0' }));
-  app.use('/api/workspaces', authMiddleware(env), workspacesRouter(env));
+  app.get('/health', (_req, res) => res.json({ status: 'ok', service: 'supportflow-api', version: '0.2.0' }));
+
+  // Generous limit for the authenticated API: 300 requests / 15 min per user.
+  // Runs AFTER authMiddleware so the limiter key includes the user id.
+  const authedRateLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 300 });
+  const authed = [authMiddleware(env), authedRateLimit, requireWorkspaceMember(env)] as const;
+
+  app.use('/api/workspaces', authMiddleware(env), authedRateLimit, workspacesRouter(env));
+  // Workspace-scoped Phase 2 routers (membership enforced by requireWorkspaceMember,
+  // which reads :workspaceId — see middleware/workspaceAuth.ts).
+  app.use('/api/workspaces/:workspaceId/customers', ...authed, customersRouter(env));
+  app.use('/api/workspaces/:workspaceId/conversations', ...authed, conversationsRouter(env));
+  app.use('/api/workspaces/:workspaceId/tickets', ...authed, ticketsRouter(env));
+  app.use('/api/workspaces/:workspaceId/widget-settings', ...authed, widgetSettingsRouter(env));
+
+  // Public widget router — no auth; each endpoint has its own strict
+  // per-IP rate limit (see routes/widget.ts).
+  app.use('/api/widget', widgetRouter(env));
+
   app.use(notFound);
   app.use(errorHandler);
   return app;

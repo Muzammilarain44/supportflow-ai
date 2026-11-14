@@ -1,19 +1,184 @@
 import { supabase } from './supabase';
+
 const API_URL = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://localhost:4000';
+
 async function authHeaders(): Promise<Record<string, string>> {
   const { data } = await supabase.auth.getSession();
   const token = data.session?.access_token;
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
+
 export async function apiFetch(path: string, init: RequestInit = {}) {
-  const res = await fetch(`${API_URL}${path}`, { ...init, headers: { 'Content-Type': 'application/json', ...(await authHeaders()), ...(init.headers ?? {}) } });
+  const res = await fetch(`${API_URL}${path}`, {
+    ...init,
+    headers: { 'Content-Type': 'application/json', ...(await authHeaders()), ...(init.headers ?? {}) },
+  });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error((body as { error?: string }).error ?? `Request failed (${res.status})`);
   return body;
 }
+
+/** Public (no-auth) fetch for the widget endpoints — no Supabase token is sent. */
+export async function widgetFetch(path: string, init: RequestInit = {}) {
+  const res = await fetch(`${API_URL}${path}`, {
+    ...init,
+    headers: { 'Content-Type': 'application/json', ...(init.headers ?? {}) },
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error((body as { error?: string }).error ?? `Request failed (${res.status})`);
+  return body;
+}
+
+function qs(params: Record<string, string | number | undefined>): string {
+  const search = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== '') search.set(k, String(v));
+  }
+  const s = search.toString();
+  return s ? `?${s}` : '';
+}
+
+// ---------- Types (mirror @supportflow/shared; the web app has no shared dep) ----------
+export type WorkspaceRole = 'owner' | 'admin' | 'member';
+export interface Workspace {
+  id: string; name: string; slug: string; description: string | null;
+  owner_id: string; created_at: string; updated_at: string;
+}
+export interface WorkspaceMember {
+  id: string; workspace_id: string; user_id: string; role: WorkspaceRole; created_at: string; updated_at: string;
+}
+export type Priority = 'low' | 'medium' | 'high' | 'urgent';
+export type ConversationStatus = 'open' | 'pending' | 'resolved' | 'closed';
+export type TicketStatus = 'open' | 'in_progress' | 'waiting_for_customer' | 'resolved' | 'closed';
+export type TicketCategory = 'general' | 'billing' | 'technical' | 'feature' | 'bug' | 'other';
+export type SenderType = 'customer' | 'agent' | 'system';
+export interface Customer {
+  id: string; workspace_id: string; full_name: string; email: string; phone: string | null;
+  tags: string[]; notes: string | null; created_at: string; updated_at: string; last_activity_at: string | null;
+}
+export interface Conversation {
+  id: string; workspace_id: string; customer_id: string; status: ConversationStatus;
+  priority: Priority; assigned_to: string | null; tags: string[]; created_at: string;
+  updated_at: string; last_message_at: string | null;
+  customer?: { id: string; full_name: string; email: string } | null;
+  last_message?: { body: string; created_at: string } | null;
+  unread_count?: number;
+}
+export interface Message {
+  id: string; workspace_id: string; conversation_id: string; customer_id: string | null;
+  sender_type: SenderType; sender_id: string | null; body: string;
+  client_message_id: string | null; created_at: string; read_at: string | null;
+}
+export interface Ticket {
+  id: string; workspace_id: string; customer_id: string | null; conversation_id: string | null;
+  subject: string; description: string | null; category: TicketCategory; priority: Priority;
+  status: TicketStatus; assigned_to: string | null; created_by: string | null;
+  created_at: string; updated_at: string; resolved_at: string | null;
+}
+export interface TicketEvent {
+  id: string; workspace_id: string; ticket_id: string; actor_id: string | null;
+  event_type: string; field_name: string | null; old_value: string | null;
+  new_value: string | null; note: string | null; created_at: string;
+}
+export interface ConversationNote {
+  id: string; workspace_id: string; conversation_id: string; author_id: string | null;
+  body: string; created_at: string; updated_at: string;
+}
+export interface WidgetConfig {
+  business_name: string; welcome_message: string; primary_color: string; enabled: boolean;
+}
+export interface WidgetSettings extends WidgetConfig {
+  id: string; workspace_id: string; public_key: string; allowed_origins: string[];
+  created_at: string; updated_at: string;
+}
+export interface TicketStats {
+  by_status: Record<TicketStatus, number>;
+  by_priority: Record<Priority, number>;
+  total: number;
+}
+export interface ListParams {
+  page?: number; pageSize?: number; search?: string; status?: string;
+  priority?: string; assignedTo?: string; sort?: string; tag?: string; category?: string;
+}
+export interface Paginated<T> { items: T[]; total: number; page: number; pageSize: number }
+
 export const api = {
-  listWorkspaces: () => apiFetch('/api/workspaces'),
-  createWorkspace: (payload: { name: string; slug: string; description?: string | null }) =>
+  // Workspaces (Phase 1)
+  listWorkspaces: (): Promise<{ workspaces: Workspace[] }> => apiFetch('/api/workspaces'),
+  createWorkspace: (payload: { name: string; slug: string; description?: string | null }): Promise<{ workspace: Workspace }> =>
     apiFetch('/api/workspaces', { method: 'POST', body: JSON.stringify(payload) }),
-  getWorkspace: (id: string) => apiFetch(`/api/workspaces/${id}`),
+  getWorkspace: (id: string): Promise<{ workspace: Workspace }> => apiFetch(`/api/workspaces/${id}`),
+  listMembers: (workspaceId: string): Promise<{ members: WorkspaceMember[] }> =>
+    apiFetch(`/api/workspaces/${workspaceId}/members`),
+
+  // Customers
+  listCustomers: (workspaceId: string, params: ListParams = {}): Promise<{ customers: Customer[]; total: number; page: number; pageSize: number }> =>
+    apiFetch(`/api/workspaces/${workspaceId}/customers${qs(params)}`),
+  createCustomer: (workspaceId: string, payload: { full_name: string; email: string; phone?: string | null; tags?: string[]; notes?: string | null }): Promise<{ customer: Customer }> =>
+    apiFetch(`/api/workspaces/${workspaceId}/customers`, { method: 'POST', body: JSON.stringify(payload) }),
+  getCustomer: (workspaceId: string, id: string): Promise<{ customer: Customer; tickets: { total: number }; conversations: { total: number }; recent_conversations: Array<{ id: string; status: string; priority: string; last_message_at: string | null; created_at: string }> }> =>
+    apiFetch(`/api/workspaces/${workspaceId}/customers/${id}`),
+  updateCustomer: (workspaceId: string, id: string, payload: Partial<{ full_name: string; email: string; phone: string | null; tags: string[]; notes: string | null }>): Promise<{ customer: Customer }> =>
+    apiFetch(`/api/workspaces/${workspaceId}/customers/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+
+  // Conversations
+  listConversations: (workspaceId: string, params: ListParams = {}): Promise<{ conversations: Conversation[]; total: number; page: number; pageSize: number }> =>
+    apiFetch(`/api/workspaces/${workspaceId}/conversations${qs(params)}`),
+  createConversation: (workspaceId: string, payload: { customer_id: string; priority?: Priority; tags?: string[] }): Promise<{ conversation: Conversation }> =>
+    apiFetch(`/api/workspaces/${workspaceId}/conversations`, { method: 'POST', body: JSON.stringify(payload) }),
+  getConversation: (workspaceId: string, id: string): Promise<{ conversation: Conversation; customer: Customer | null; assigned_member: WorkspaceMember | null }> =>
+    apiFetch(`/api/workspaces/${workspaceId}/conversations/${id}`),
+  listMessages: (workspaceId: string, conversationId: string, params: ListParams = {}): Promise<{ messages: Message[]; total: number; page: number; pageSize: number }> =>
+    apiFetch(`/api/workspaces/${workspaceId}/conversations/${conversationId}/messages${qs(params)}`),
+  sendMessage: (workspaceId: string, conversationId: string, payload: { body: string; client_message_id?: string }): Promise<{ message: Message }> =>
+    apiFetch(`/api/workspaces/${workspaceId}/conversations/${conversationId}/messages`, { method: 'POST', body: JSON.stringify(payload) }),
+  updateConversation: (workspaceId: string, id: string, payload: Partial<{ status: ConversationStatus; priority: Priority; assigned_to: string | null; tags: string[] }>): Promise<{ conversation: Conversation }> =>
+    apiFetch(`/api/workspaces/${workspaceId}/conversations/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  markConversationRead: (workspaceId: string, id: string): Promise<{ read_count: number }> =>
+    apiFetch(`/api/workspaces/${workspaceId}/conversations/${id}/read`, { method: 'POST', body: JSON.stringify({}) }),
+  addConversationNote: (workspaceId: string, id: string, body: string): Promise<{ note: ConversationNote }> =>
+    apiFetch(`/api/workspaces/${workspaceId}/conversations/${id}/notes`, { method: 'POST', body: JSON.stringify({ body }) }),
+  listConversationNotes: (workspaceId: string, id: string): Promise<{ notes: ConversationNote[]; total: number; page: number; pageSize: number }> =>
+    apiFetch(`/api/workspaces/${workspaceId}/conversations/${id}/notes`),
+
+  // Tickets
+  listTickets: (workspaceId: string, params: ListParams = {}): Promise<{ tickets: Ticket[]; total: number; page: number; pageSize: number }> =>
+    apiFetch(`/api/workspaces/${workspaceId}/tickets${qs(params)}`),
+  getTicketStats: (workspaceId: string): Promise<TicketStats> =>
+    apiFetch(`/api/workspaces/${workspaceId}/tickets/stats`),
+  createTicket: (workspaceId: string, payload: { subject: string; description?: string | null; category?: TicketCategory; priority?: Priority; customer_id?: string; conversation_id?: string }): Promise<{ ticket: Ticket }> =>
+    apiFetch(`/api/workspaces/${workspaceId}/tickets`, { method: 'POST', body: JSON.stringify(payload) }),
+  getTicket: (workspaceId: string, id: string): Promise<{ ticket: Ticket; customer: { id: string; full_name: string; email: string } | null; conversation: { id: string; status: string; priority: string; customer_id: string } | null; assigned_member: WorkspaceMember | null }> =>
+    apiFetch(`/api/workspaces/${workspaceId}/tickets/${id}`),
+  updateTicket: (workspaceId: string, id: string, payload: Partial<{ subject: string; description: string | null; category: TicketCategory; priority: Priority; status: TicketStatus; assigned_to: string | null }>): Promise<{ ticket: Ticket }> =>
+    apiFetch(`/api/workspaces/${workspaceId}/tickets/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  listTicketEvents: (workspaceId: string, id: string): Promise<{ events: TicketEvent[]; total: number; page: number; pageSize: number }> =>
+    apiFetch(`/api/workspaces/${workspaceId}/tickets/${id}/events`),
+  addTicketNote: (workspaceId: string, id: string, body: string): Promise<{ event: TicketEvent }> =>
+    apiFetch(`/api/workspaces/${workspaceId}/tickets/${id}/notes`, { method: 'POST', body: JSON.stringify({ body }) }),
+
+  // Widget settings (admin)
+  getWidgetSettings: async (workspaceId: string): Promise<WidgetSettings | null> => {
+    try {
+      const res = await apiFetch(`/api/workspaces/${workspaceId}/widget-settings`) as { widget_settings: WidgetSettings };
+      return res.widget_settings;
+    } catch (err) {
+      if ((err as Error).message.toLowerCase().includes('not found')) return null;
+      throw err;
+    }
+  },
+  createWidgetSettings: (workspaceId: string, payload: Partial<{ business_name: string; welcome_message: string; primary_color: string; enabled: boolean; allowed_origins: string[] }>): Promise<{ widget_settings: WidgetSettings }> =>
+    apiFetch(`/api/workspaces/${workspaceId}/widget-settings`, { method: 'POST', body: JSON.stringify(payload) }),
+  updateWidgetSettings: (workspaceId: string, payload: Partial<{ business_name: string; welcome_message: string; primary_color: string; enabled: boolean; allowed_origins: string[] }>): Promise<{ widget_settings: WidgetSettings }> =>
+    apiFetch(`/api/workspaces/${workspaceId}/widget-settings`, { method: 'PATCH', body: JSON.stringify(payload) }),
+
+  // Public widget (no auth)
+  getWidgetConfig: (key: string): Promise<WidgetConfig> =>
+    widgetFetch(`/api/widget/config?key=${encodeURIComponent(key)}`),
+  createWidgetSession: (payload: { key: string; name?: string; email?: string }): Promise<{ token: string; conversation_id: string; customer_id: string; expires_at: string }> =>
+    widgetFetch('/api/widget/sessions', { method: 'POST', body: JSON.stringify(payload) }),
+  sendWidgetMessage: (payload: { token: string; body: string; client_message_id?: string }): Promise<{ message_id: string }> =>
+    widgetFetch('/api/widget/messages', { method: 'POST', body: JSON.stringify(payload) }),
+  getWidgetHistory: (token: string): Promise<{ messages: Array<{ id: string; sender_type: string; body: string; created_at: string }> }> =>
+    widgetFetch(`/api/widget/history?token=${encodeURIComponent(token)}`),
 };

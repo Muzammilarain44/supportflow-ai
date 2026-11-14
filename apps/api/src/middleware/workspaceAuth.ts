@@ -5,7 +5,13 @@ import { ApiError } from '../errors.js';
 import type { AuthedRequest } from './auth.js';
 
 export function workspaceIdFrom(req: AuthedRequest): string | null {
-  return (req.params.id as string) ?? (req.body?.workspaceId as string) ?? (req.body?.workspace_id as string) ?? null;
+  return (
+    (req.params.workspaceId as string) ??
+    (req.params.id as string) ??
+    (req.body?.workspaceId as string) ??
+    (req.body?.workspace_id as string) ??
+    null
+  );
 }
 
 /** Pure, unit-testable membership check. */
