@@ -71,21 +71,39 @@ revoke all on function public.create_workspace_with_owner(text, text, text) from
 grant execute on function public.create_workspace_with_owner(text, text, text) to authenticated;
 
 -- ---------- Row Level Security ----------
+-- IMPORTANT: never write a policy on workspace_members that queries
+-- workspace_members directly — Postgres evaluates that subquery under the
+-- same policy and fails with "infinite recursion detected in policy".
+-- Membership is therefore checked through this SECURITY DEFINER helper,
+-- whose internal query runs as the function owner and bypasses RLS.
+create or replace function public.is_workspace_member(p_workspace_id uuid)
+returns boolean
+language sql
+security definer
+stable
+set search_path = public
+as $$
+  select exists (
+    select 1 from public.workspace_members
+    where workspace_id = p_workspace_id and user_id = auth.uid()
+  );
+$$;
+revoke all on function public.is_workspace_member(uuid) from public;
+grant execute on function public.is_workspace_member(uuid) to authenticated;
+
 alter table public.workspaces enable row level security;
 alter table public.workspace_members enable row level security;
 
 -- workspaces: a user can read a workspace only if they are a member of it.
 drop policy if exists "workspaces_select_members" on public.workspaces;
 create policy "workspaces_select_members" on public.workspaces for select
-  using (exists (select 1 from public.workspace_members m
-                 where m.workspace_id = workspaces.id and m.user_id = auth.uid()));
+  using (public.is_workspace_member(workspaces.id));
 -- No direct INSERT/UPDATE/DELETE policies for workspaces: creation goes through
 -- create_workspace_with_owner() (SECURITY DEFINER). Direct writes are denied by default.
 
 -- workspace_members: a user can read members only of workspaces they belong to.
 drop policy if exists "workspace_members_select_members" on public.workspace_members;
 create policy "workspace_members_select_members" on public.workspace_members for select
-  using (exists (select 1 from public.workspace_members m
-                 where m.workspace_id = workspace_members.workspace_id and m.user_id = auth.uid()));
+  using (public.is_workspace_member(workspace_members.workspace_id));
 -- No direct INSERT/UPDATE/DELETE policies: membership is created by the secure function
 -- (owner row) and, in later phases, by owner/admin-only server-side operations.
