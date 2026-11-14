@@ -1,0 +1,7 @@
+{
+  "name": "SupportFlow — Ticket Routing (PLACEHOLDER — NOT WIRED UP, Phase 3)",
+  "nodes": [],
+  "connections": {},
+  "active": false,
+  "notes": "Phase 1 placeholder only. Do not import or activate. Real routing, SLA escalation, webhook auth and execution logging arrive in Phase 3."
+}
