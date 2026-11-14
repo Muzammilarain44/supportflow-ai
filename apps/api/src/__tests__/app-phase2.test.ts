@@ -270,10 +270,19 @@ vi.mock('../lib/supabase.js', () => {
       if (fn === 'post_widget_visitor_message') {
         const session = mockState.widgetSessions.get(params.p_token);
         if (!session) return { data: null, error: { message: 'Invalid or expired session' } };
+        // Idempotency (mirrors 0005): same client key in this conversation
+        // returns the existing message — no second row, no second event.
+        const clientKey = params.p_client_message_id ?? null;
+        if (clientKey) {
+          const existing = mockState.messages.find(
+            (m) => m.conversation_id === session.conversation_id && m.client_message_id === clientKey,
+          );
+          if (existing) return { data: [{ message_id: existing.id, is_duplicate: true }], error: null };
+        }
         const messageId = mockState.nextId();
         mockState.messages.push({
           id: messageId, workspace_id: 'ws-1', conversation_id: session.conversation_id, customer_id: session.customer_id,
-          sender_type: 'customer', sender_id: null, body: params.p_body, client_message_id: null,
+          sender_type: 'customer', sender_id: null, body: params.p_body, client_message_id: clientKey,
           created_at: mockState.ts(), read_at: null,
         });
         const conv = mockState.conversations.find((c) => c.id === session.conversation_id);
@@ -284,7 +293,7 @@ vi.mock('../lib/supabase.js', () => {
           payload: { workspace_id: 'ws-1', conversation_id: session.conversation_id, message_id: messageId, customer_id: session.customer_id },
           status: 'pending', created_at: mockState.ts(),
         });
-        return { data: messageId, error: null };
+        return { data: [{ message_id: messageId, is_duplicate: false }], error: null };
       }
       if (fn === 'get_widget_visitor_history') {
         const session = mockState.widgetSessions.get(params.p_token);
@@ -644,6 +653,23 @@ describe('widget (public)', () => {
     expect(empty.status).toBe(400);
     const bad = await request(app).post('/api/widget/messages').send({ token: 'no-such-token', body: 'hello' });
     expect(bad.status).toBe(401);
+  });
+
+  it('dedupes a repeated widget message with the same client_message_id (201 then 200, one row)', async () => {
+    const payload = { token: visitorToken, body: 'Same message sent twice.', client_message_id: 'visitor-msg-1' };
+    const first = await request(app).post('/api/widget/messages').send(payload);
+    expect(first.status).toBe(201);
+    expect(first.body.message_id).toBeTruthy();
+    const second = await request(app).post('/api/widget/messages').send(payload);
+    expect(second.status).toBe(200);
+    expect(second.body.message_id).toBe(first.body.message_id);
+    // Only one row stored, and only one outbox event recorded.
+    const history = await request(app).get(`/api/widget/history?token=${visitorToken}`);
+    expect(history.body.messages.filter((m: any) => m.body === 'Same message sent twice.')).toHaveLength(1);
+    const events = mockState.automationEvents.filter(
+      (e) => e.event_type === 'customer.message.created' && e.entity_id === first.body.message_id,
+    );
+    expect(events).toHaveLength(1);
   });
 
   it('history for an unknown token returns an empty list (200)', async () => {

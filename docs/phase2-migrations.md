@@ -19,6 +19,26 @@ schema on this project, not `public`, and the RPCs set
 touched. 0004 is idempotent (`create or replace function`) and safe to
 re-run. 0003 itself was not edited. Apply 0004 after 0003 (step 4 below).
 
+## 0005 — Widget message idempotency (live bug, 2026-11-14)
+
+`supabase/migrations/0005_phase2_widget_message_idempotency.sql` fixes a
+live-tested bug: posting the same widget visitor message twice with the
+same `client_message_id` stored two identical rows. The messages table
+already had a partial unique index on `(conversation_id,
+client_message_id)` and the widget embed already sent a per-message
+`client_message_id` — but the RPC
+`post_widget_visitor_message(text, text)` never accepted or stored it.
+0005 drops the 2-arg function and re-creates it as
+`post_widget_visitor_message(p_token, p_body, p_client_message_id
+DEFAULT NULL)` returning `TABLE(message_id uuid, is_duplicate
+boolean)`: a repeat with the same key in the same conversation returns
+the existing message as a duplicate (no second insert, no second
+`customer.message.created` outbox event); a concurrent-retry race is
+covered by a `unique_violation` handler that returns the row the other
+transaction inserted. The API returns **200** for a duplicate and **201**
+for a new message. 0003 and 0004 are not edited. Apply 0005 after 0004
+(step 5 below).
+
 ## How to apply
 
 In Supabase Dashboard > SQL Editor, run the migrations **in order**:
@@ -28,6 +48,9 @@ In Supabase Dashboard > SQL Editor, run the migrations **in order**:
 3. `0003_phase2_support_platform.sql`
 4. `0004_phase2_fix_widget_rpcs.sql` (re-creates the 5 RPCs from 0003
    with `extensions.`-qualified pgcrypto calls — see the 0004 note above)
+5. `0005_phase2_widget_message_idempotency.sql` (re-creates
+   `post_widget_visitor_message` with `client_message_id` dedupe — see
+   the 0005 note above)
 
 The file is idempotent (safe to re-run): `create table if not exists`,
 `create index if not exists`, `drop policy if exists` before every
@@ -234,14 +257,21 @@ Generates a random token (`gen_random_bytes(32)`, hex-encoded), stores
 be recovered from the database afterwards. If the visitor loses it,
 they must start a new session.
 
-### post_widget_visitor_message(p_token text, p_body text) → uuid
+### post_widget_visitor_message(p_token text, p_body text, p_client_message_id text DEFAULT NULL) → TABLE(message_id uuid, is_duplicate boolean)
 Grant: `anon`, `authenticated`. Hashes the token (SHA-256) and finds a
 non-expired session; raises `Invalid or expired session` otherwise.
-Validates the body (trimmed, 1–5000 chars), inserts a `customer`
-message into the session's conversation, updates
-`conversations.last_message_at` and the session's `last_seen_at`, and
-records an `automation_events` row (`customer.message.created`,
-payload with ids only — no message body). Returns the new message id.
+Validates the body (trimmed, 1–5000 chars), then — if a non-null client
+key is supplied — returns the existing message with the same
+`conversation_id` + `client_message_id` as a duplicate (`is_duplicate =
+true`, no second insert, no second outbox event). Otherwise inserts a
+`customer` message into the session's conversation (storing the client
+key), updates `conversations.last_message_at` and the session's
+`last_seen_at`, and records an `automation_events` row
+(`customer.message.created`, payload with ids only — no message body).
+A concurrent-retry race on the unique index is handled by a
+`unique_violation` handler that returns the other transaction's row.
+Returns the message id and whether it was a duplicate. (0005; the
+2-arg version from 0003/0004 is dropped.)
 
 ### get_widget_visitor_history(p_token text) → TABLE(message_id uuid, sender_type text, body text, created_at timestamptz)
 Grant: `anon`, `authenticated`. Hashes the token and returns **only**

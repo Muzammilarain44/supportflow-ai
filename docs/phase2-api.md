@@ -79,7 +79,7 @@ Supabase JWT in `Authorization: Bearer <token>`.
 | --- | --- | --- | --- |
 | GET | `/config?key=<public_key>` | — | `{business_name, welcome_message, primary_color, enabled}` via RPC `get_widget_config`. Unknown key or disabled widget → **404** `Widget not found` |
 | POST | `/sessions` | — | `{key, name?, email?}` via RPC `create_widget_visitor_session`. Returns `{token, conversation_id, customer_id, expires_at}`. The raw token is returned **once** here and is never logged or stored by the API |
-| POST | `/messages` | — | `{token, body, client_message_id?}` via RPC `post_widget_visitor_message`. Body 1–5000 chars (Zod). Returns `{message_id}`. Invalid/expired token → **401**. The RPC also records the `customer.message.created` outbox event — the API does not double-record it |
+| POST | `/messages` | — | `{token, body, client_message_id?}` via RPC `post_widget_visitor_message`. Body 1–5000 chars (Zod). **Idempotent on `client_message_id` (migration 0005):** a repeat with the same key in the same conversation returns the existing message with **200** (no second row, no second outbox event); a new message returns **201** with `{message_id}`. Invalid/expired token → **401**. The RPC also records the `customer.message.created` outbox event — the API does not double-record it |
 | GET | `/history?token=...` | — | `{messages}` via RPC `get_widget_visitor_history`, oldest first, only the caller's own session. Unknown/expired token → `{messages: []}` with **200** (per RPC design) |
 
 Widget responses never include internal fields: no `workspace_id`, no

@@ -165,6 +165,10 @@ export type WidgetSessionInput = z.infer<typeof widgetSessionSchema>;
 
 export const widgetMessageSchema = z.object({
   body: z.string().trim().min(1, 'Message body is required').max(5000),
+  // Idempotency key supplied by the widget embed (one per send). A repeat
+  // with the same key in the same conversation returns the existing message
+  // (HTTP 200) instead of storing a duplicate — see 0005 migration.
+  client_message_id: z.string().trim().max(100).optional(),
 });
 export type WidgetMessageInput = z.infer<typeof widgetMessageSchema>;
 

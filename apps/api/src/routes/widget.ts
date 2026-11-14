@@ -21,7 +21,6 @@ const sessionBodySchema = z.object({
 const messageBodySchema = z.object({
   token: z.string().trim().min(1, 'Session token is required'),
   ...widgetMessageSchema.shape,
-  client_message_id: z.string().max(100).optional(),
 });
 
 function rpcErrorMessage(error: { message: string }): string {
@@ -105,6 +104,8 @@ export function widgetRouter(env: Env) {
 
   // POST /messages — visitor message via the guest RPC (which also records
   // the customer.message.created outbox event — do not double-record).
+  // Idempotent on client_message_id: a repeat returns the existing message
+  // with 200; a new message returns 201.
   router.post(
     '/messages',
     rateLimit({ windowMs: 10 * 60 * 1000, max: 30, key: perIp }),
@@ -115,6 +116,7 @@ export function widgetRouter(env: Env) {
         const { data, error } = await supabase.rpc('post_widget_visitor_message', {
           p_token: req.body.token,
           p_body: req.body.body,
+          p_client_message_id: req.body.client_message_id ?? null,
         });
         if (error) {
           const msg = rpcErrorMessage(error as { message: string });
@@ -123,7 +125,13 @@ export function widgetRouter(env: Env) {
           }
           throw new ApiError(400, 'Failed to send message');
         }
-        return res.status(201).json({ message_id: data });
+        const rows = (Array.isArray(data) ? data : [data]) as Array<{
+          message_id: string;
+          is_duplicate: boolean;
+        }>;
+        const row = rows[0];
+        if (!row?.message_id) throw new ApiError(400, 'Failed to send message');
+        return res.status(row.is_duplicate ? 200 : 201).json({ message_id: row.message_id });
       } catch (e) {
         return next(e);
       }
