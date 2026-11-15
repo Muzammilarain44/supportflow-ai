@@ -193,6 +193,70 @@ function Thread({ conversationId, onBack }: { conversationId: string; onBack: ()
   });
   const messages = messagesQ.data?.messages ?? [];
 
+  // Phase 3: pending AI suggestion + recent AI executions for this conversation.
+  const suggestionsQ = useQuery({
+    queryKey: ['suggestions', workspaceId, conversationId],
+    queryFn: () => api.listSuggestions(workspaceId!, conversationId, { page: 1, pageSize: 20 }),
+    enabled: !!workspaceId,
+  });
+  const executionsQ = useQuery({
+    queryKey: ['ai-executions', workspaceId, conversationId],
+    queryFn: async () => {
+      const res = await api.listAiExecutions(workspaceId!, { page: 1, pageSize: 20 });
+      return { ...res, ai_executions: res.ai_executions.filter((e) => e.conversation_id === conversationId) };
+    },
+    enabled: !!workspaceId,
+  });
+  const pendingSuggestion = (suggestionsQ.data?.ai_suggestions ?? []).find((s) => s.status === 'pending');
+  const [editingSuggestion, setEditingSuggestion] = useState(false);
+  const [editText, setEditText] = useState('');
+  const [resumeError, setResumeError] = useState('');
+
+  const invalidateAi = () => {
+    void queryClient.invalidateQueries({ queryKey: ['suggestions', workspaceId, conversationId] });
+    void queryClient.invalidateQueries({ queryKey: ['ai-executions', workspaceId, conversationId] });
+    void queryClient.invalidateQueries({ queryKey: ['conversation', workspaceId, conversationId] });
+    void queryClient.invalidateQueries({ queryKey: ['conversations', workspaceId] });
+    void queryClient.invalidateQueries({ queryKey: ['messages', workspaceId, conversationId] });
+  };
+  const acceptMut = useMutation({
+    mutationFn: (editedText?: string) =>
+      api.acceptSuggestion(workspaceId!, conversationId, pendingSuggestion!.id, editedText ? { edited_text: editedText } : {}),
+    onSuccess: () => {
+      setEditingSuggestion(false);
+      toast.success('Suggestion accepted and sent');
+      invalidateAi();
+    },
+    onError: (err) => toast.error(`Could not accept suggestion: ${(err as Error).message}`),
+  });
+  const rejectMut = useMutation({
+    mutationFn: () => api.rejectSuggestion(workspaceId!, conversationId, pendingSuggestion!.id),
+    onSuccess: () => { toast.success('Suggestion rejected'); invalidateAi(); },
+    onError: (err) => toast.error(`Could not reject suggestion: ${(err as Error).message}`),
+  });
+  const takeoverMut = useMutation({
+    mutationFn: () => api.handoffConversation(workspaceId!, conversationId, 'Agent takeover'),
+    onSuccess: () => {
+      toast.success('AI paused — you have taken over this conversation');
+      invalidateAi();
+      void queryClient.invalidateQueries({ queryKey: ['tickets', workspaceId] });
+    },
+    onError: (err) => toast.error(`Takeover failed: ${(err as Error).message}`),
+  });
+  const resumeMut = useMutation({
+    mutationFn: () => api.resumeAi(workspaceId!, conversationId),
+    onSuccess: () => {
+      setResumeError('');
+      toast.success('AI resumed');
+      invalidateAi();
+    },
+    onError: (err) => {
+      // A 409 means the workspace policy forbids resuming — show it honestly.
+      setResumeError((err as Error).message);
+      toast.error((err as Error).message);
+    },
+  });
+
   // Mark customer messages read when the thread opens.
   useEffect(() => {
     if (!workspaceId) return;
@@ -247,7 +311,30 @@ function Thread({ conversationId, onBack }: { conversationId: string; onBack: ()
         </div>
         <StatusBadge status={conv.status} />
         <PriorityBadge priority={conv.priority} />
+        {conv.ai_paused ? (
+          <button
+            onClick={() => resumeMut.mutate()}
+            disabled={resumeMut.isPending}
+            className="shrink-0 rounded-lg bg-success px-3 py-1.5 text-xs font-medium text-white hover:bg-green-600 disabled:opacity-50"
+          >
+            {resumeMut.isPending ? 'Resuming…' : 'Resume AI'}
+          </button>
+        ) : (
+          <button
+            onClick={() => takeoverMut.mutate()}
+            disabled={takeoverMut.isPending}
+            className="shrink-0 rounded-lg bg-warning/15 px-3 py-1.5 text-xs font-medium text-amber-300 hover:bg-warning/25 disabled:opacity-50"
+          >
+            {takeoverMut.isPending ? 'Taking over…' : 'Take over (pause AI)'}
+          </button>
+        )}
       </div>
+      {conv.ai_paused && (
+        <div className="border-b border-warning/50 bg-warning/10 px-4 py-2 text-sm text-amber-300" role="alert">
+          AI paused — handed off: {conv.handoff_reason ?? 'Agent takeover'}
+          {resumeError && <span className="block text-red-300">{resumeError}</span>}
+        </div>
+      )}
       <div className="max-h-[55vh] min-h-64 space-y-3 overflow-y-auto p-4" aria-live="polite">
         {messages.length === 0 ? (
           <p className="text-center text-sm text-slate-400">No messages yet — write the first reply below.</p>
@@ -265,6 +352,70 @@ function Thread({ conversationId, onBack }: { conversationId: string; onBack: ()
         )}
         <div ref={bottomRef} />
       </div>
+      {/* Phase 3: AI suggestion panel — shown only while a pending suggestion exists. */}
+      {pendingSuggestion && (
+        <div className="border-t border-primary/40 bg-primary/5 p-4" aria-label="AI suggestion">
+          <h3 className="text-sm font-semibold text-white">AI suggestion</h3>
+          {editingSuggestion ? (
+            <div className="mt-2 space-y-2">
+              <label htmlFor="suggestion-edit" className="sr-only">Edit suggestion</label>
+              <textarea
+                id="suggestion-edit"
+                className={inputCls}
+                rows={4}
+                value={editText}
+                onChange={(e) => setEditText(e.target.value)}
+              />
+              <div className="flex gap-2">
+                <button
+                  onClick={() => acceptMut.mutate(editText.trim() || undefined)}
+                  disabled={acceptMut.isPending || !editText.trim()}
+                  className={btnPrimary}
+                >
+                  {acceptMut.isPending ? 'Sending…' : 'Send edited suggestion'}
+                </button>
+                <button onClick={() => setEditingSuggestion(false)} className={btnSecondary}>Cancel</button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <p className="mt-2 whitespace-pre-wrap text-sm text-slate-200">{pendingSuggestion.suggestion}</p>
+              {(pendingSuggestion.sources ?? []).length > 0 && (
+                <p className="mt-2 text-xs text-slate-400">
+                  Sources: {(pendingSuggestion.sources ?? []).map((s) => (typeof s === 'string' ? s : (s.title ?? s.id ?? 'Document'))).join(', ')}
+                </p>
+              )}
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button onClick={() => acceptMut.mutate()} disabled={acceptMut.isPending || rejectMut.isPending} className={btnPrimary}>
+                  {acceptMut.isPending ? 'Accepting…' : 'Accept'}
+                </button>
+                <button
+                  onClick={() => { setEditText(pendingSuggestion.suggestion); setEditingSuggestion(true); }}
+                  disabled={acceptMut.isPending || rejectMut.isPending}
+                  className={btnSecondary}
+                >
+                  Edit
+                </button>
+                <button onClick={() => rejectMut.mutate()} disabled={acceptMut.isPending || rejectMut.isPending} className="rounded-lg bg-danger/15 px-4 py-2 text-sm font-medium text-red-300 hover:bg-danger/25 disabled:opacity-50">
+                  {rejectMut.isPending ? 'Rejecting…' : 'Reject'}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+      {(executionsQ.data?.ai_executions ?? []).length > 0 && (
+        <div className="border-t border-slate-700/60 p-4">
+          <h3 className="text-sm font-semibold text-white">AI activity</h3>
+          <ul className="mt-2 space-y-1">
+            {executionsQ.data.ai_executions.slice(0, 5).map((ex) => (
+              <li key={ex.id} className="text-xs text-slate-400">
+                {ex.provider ?? 'Unknown provider'} · {ex.model ?? 'Unknown model'} · {ex.status.charAt(0).toUpperCase() + ex.status.slice(1)} · {formatTime(ex.created_at)}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       <form onSubmit={submit} className="flex gap-2 border-t border-slate-700/60 p-3">
         <label htmlFor="inbox-composer" className="sr-only">Reply to customer</label>
         <input

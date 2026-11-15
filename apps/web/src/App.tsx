@@ -4,7 +4,10 @@ import ProtectedRoute from './components/ProtectedRoute';
 import Dashboard from './pages/Dashboard';
 import Onboarding from './pages/Onboarding';
 import { LoginPage, SignupPage } from './pages/Auth';
-import { AnalyticsPage, AutomationsPage, KnowledgePage, SettingsPage } from './pages/Placeholders';
+import { AnalyticsPage } from './pages/Placeholders';
+import Knowledge from './pages/Knowledge';
+import Automations from './pages/Automations';
+import AISettings from './pages/AISettings';
 import Inbox from './pages/Inbox';
 import Tickets, { TicketDetailPage } from './pages/Tickets';
 import Customers, { CustomerDetailPage } from './pages/Customers';
@@ -32,10 +35,10 @@ export default function App() {
           <Route path="/customers/:customerId" element={<CustomerDetailPage />} />
           <Route path="/team" element={<Team />} />
           <Route path="/widget-demo" element={<WidgetDemo />} />
-          <Route path="/knowledge" element={<KnowledgePage />} />
-          <Route path="/automations" element={<AutomationsPage />} />
+          <Route path="/knowledge" element={<Knowledge />} />
+          <Route path="/automations" element={<Automations />} />
           <Route path="/analytics" element={<AnalyticsPage />} />
-          <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/settings" element={<AISettings />} />
         </Route>
       </Route>
       <Route path="*" element={<LoginPage />} />

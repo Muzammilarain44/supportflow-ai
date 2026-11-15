@@ -68,6 +68,7 @@ export interface Conversation {
   id: string; workspace_id: string; customer_id: string; status: ConversationStatus;
   priority: Priority; assigned_to: string | null; tags: string[]; created_at: string;
   updated_at: string; last_message_at: string | null;
+  ai_paused?: boolean; handoff_reason?: string | null; handed_off_at?: string | null;
   customer?: { id: string; full_name: string; email: string } | null;
   last_message?: { body: string; created_at: string } | null;
   unread_count?: number;
@@ -82,6 +83,7 @@ export interface Ticket {
   subject: string; description: string | null; category: TicketCategory; priority: Priority;
   status: TicketStatus; assigned_to: string | null; created_by: string | null;
   created_at: string; updated_at: string; resolved_at: string | null;
+  escalation_reason?: string | null; escalated_at?: string | null;
 }
 export interface TicketEvent {
   id: string; workspace_id: string; ticket_id: string; actor_id: string | null;
@@ -109,6 +111,49 @@ export interface ListParams {
   priority?: string; assignedTo?: string; sort?: string; tag?: string; category?: string;
 }
 export interface Paginated<T> { items: T[]; total: number; page: number; pageSize: number }
+
+// ---------- Phase 3: AI / handoff types (local; packages/shared untouched) ----------
+export type AiMode = 'disabled' | 'suggestion' | 'auto' | 'human_only';
+export type KnowledgeKind = 'article' | 'faq';
+export interface KnowledgeDocument {
+  id: string; workspace_id: string; title: string; content: string; kind: KnowledgeKind;
+  enabled: boolean; archived: boolean; created_by: string | null;
+  created_at: string; updated_at: string;
+  /** Latest indexing job status, when the API returns one — never invented. */
+  latest_job_status?: string | null;
+  indexing_status?: string | null;
+}
+export interface AiSettings {
+  id?: string; workspace_id: string; enabled: boolean; mode: AiMode;
+  provider_order: string[]; auto_reply_require_grounding: boolean;
+  escalation_on_low_confidence: boolean; created_at?: string; updated_at?: string;
+}
+export interface AiOverview {
+  ai_enabled: boolean; mode: AiMode;
+  automation: { pending: number; processing: number; failed: number; dead: number; last_processed_at: string | null };
+  totals: { assisted_conversations: number; suggestions: number; auto_replies: number; handoffs: number; failed_executions: number };
+}
+export type AiExecutionStatus = 'pending' | 'success' | 'failed' | 'escalated' | 'skipped';
+export interface AiExecution {
+  id: string; workspace_id: string; conversation_id: string; message_id: string | null;
+  event_id: string | null; provider: string | null; model: string | null; mode: string | null;
+  status: AiExecutionStatus; prompt_tokens: number | null; completion_tokens: number | null;
+  latency_ms: number | null; error: string | null; suggestion: string | null; created_at: string;
+}
+export interface AutomationEvent {
+  id: string; workspace_id: string; event_type: string; entity_type: string; entity_id: string;
+  status: string; attempts: number; payload?: Record<string, unknown> | null;
+  created_at: string; processed_at: string | null; last_error?: string | null;
+}
+export type AiSuggestionStatus = 'pending' | 'accepted' | 'edited' | 'rejected';
+export interface AiSuggestion {
+  id: string; workspace_id: string; conversation_id: string; message_id: string | null;
+  suggestion: string; sources: Array<{ title?: string; id?: string } | string> | null;
+  status: AiSuggestionStatus; reviewed_by: string | null; created_at: string; updated_at: string;
+}
+export interface HandoffResult {
+  ticket: { id: string }; handoff: { id: string }; reused: boolean;
+}
 
 export const api = {
   // Workspaces (Phase 1)
@@ -193,6 +238,58 @@ export const api = {
   // migration-0008 policy RPCs are not deployed yet (legacy fallback).
   getWidgetConfig: (key: string, parentOrigin?: string): Promise<WidgetConfig> =>
     widgetFetch(`/api/widget/config?key=${encodeURIComponent(key)}${parentOrigin ? `&parent_origin=${encodeURIComponent(parentOrigin)}` : ''}`),
+
+  // ---------- Phase 3: knowledge base ----------
+  listKnowledge: async (
+    workspaceId: string,
+    params: { q?: string; kind?: string; enabled?: boolean; page?: number; pageSize?: number } = {},
+  ): Promise<{ knowledge_documents: KnowledgeDocument[]; total: number; page: number; pageSize: number }> => {
+    const raw = await apiFetch(`/api/workspaces/${workspaceId}/knowledge${qs({
+      q: params.q, kind: params.kind,
+      enabled: params.enabled === undefined ? undefined : String(params.enabled),
+      page: params.page, pageSize: params.pageSize,
+    })}`) as { knowledge_documents?: KnowledgeDocument[]; items?: KnowledgeDocument[]; total: number; page: number; pageSize: number };
+    return {
+      knowledge_documents: raw.knowledge_documents ?? raw.items ?? [],
+      total: raw.total ?? 0, page: raw.page ?? 1, pageSize: raw.pageSize ?? 20,
+    };
+  },
+  getKnowledge: (workspaceId: string, id: string): Promise<{ knowledge_document: KnowledgeDocument }> =>
+    apiFetch(`/api/workspaces/${workspaceId}/knowledge/${id}`),
+  createKnowledge: (workspaceId: string, payload: { title: string; content: string; kind: KnowledgeKind }): Promise<{ knowledge_document: KnowledgeDocument }> =>
+    apiFetch(`/api/workspaces/${workspaceId}/knowledge`, { method: 'POST', body: JSON.stringify(payload) }),
+  updateKnowledge: (workspaceId: string, id: string, payload: Partial<{ title: string; content: string; kind: KnowledgeKind; enabled: boolean }>): Promise<{ knowledge_document: KnowledgeDocument }> =>
+    apiFetch(`/api/workspaces/${workspaceId}/knowledge/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  deleteKnowledge: (workspaceId: string, id: string): Promise<{ knowledge_document: KnowledgeDocument }> =>
+    apiFetch(`/api/workspaces/${workspaceId}/knowledge/${id}`, { method: 'DELETE' }),
+  reindexKnowledge: (workspaceId: string, id: string): Promise<{ job: unknown }> =>
+    apiFetch(`/api/workspaces/${workspaceId}/knowledge/${id}/reindex`, { method: 'POST', body: JSON.stringify({}) }),
+
+  // ---------- Phase 3: AI settings / overview ----------
+  getAiSettings: (workspaceId: string): Promise<{ ai_settings: AiSettings }> =>
+    apiFetch(`/api/workspaces/${workspaceId}/ai-settings`),
+  updateAiSettings: (workspaceId: string, payload: Partial<{ enabled: boolean; mode: AiMode; provider_order: string[]; auto_reply_require_grounding: boolean; escalation_on_low_confidence: boolean }>): Promise<{ ai_settings: AiSettings }> =>
+    apiFetch(`/api/workspaces/${workspaceId}/ai-settings`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  getAiOverview: (workspaceId: string): Promise<AiOverview> =>
+    apiFetch(`/api/workspaces/${workspaceId}/ai-overview`),
+
+  // ---------- Phase 3: automation activity ----------
+  listAiExecutions: (workspaceId: string, params: { status?: string; page?: number; pageSize?: number } = {}): Promise<{ ai_executions: AiExecution[]; total: number; page: number; pageSize: number }> =>
+    apiFetch(`/api/workspaces/${workspaceId}/ai-executions${qs(params)}`),
+  listAutomationEvents: (workspaceId: string, params: { status?: string; page?: number; pageSize?: number } = {}): Promise<{ automation_events: AutomationEvent[]; total: number; page: number; pageSize: number }> =>
+    apiFetch(`/api/workspaces/${workspaceId}/automation-events${qs(params)}`),
+
+  // ---------- Phase 3: suggestions + handoff (per conversation) ----------
+  listSuggestions: (workspaceId: string, conversationId: string, params: { page?: number; pageSize?: number } = {}): Promise<{ ai_suggestions: AiSuggestion[]; total: number; page: number; pageSize: number }> =>
+    apiFetch(`/api/workspaces/${workspaceId}/conversations/${conversationId}/suggestions${qs(params)}`),
+  acceptSuggestion: (workspaceId: string, conversationId: string, suggestionId: string, payload: { edited_text?: string } = {}): Promise<{ ai_suggestion: AiSuggestion }> =>
+    apiFetch(`/api/workspaces/${workspaceId}/conversations/${conversationId}/suggestions/${suggestionId}/accept`, { method: 'POST', body: JSON.stringify(payload) }),
+  rejectSuggestion: (workspaceId: string, conversationId: string, suggestionId: string): Promise<{ ai_suggestion: AiSuggestion }> =>
+    apiFetch(`/api/workspaces/${workspaceId}/conversations/${conversationId}/suggestions/${suggestionId}/reject`, { method: 'POST', body: JSON.stringify({}) }),
+  handoffConversation: (workspaceId: string, conversationId: string, reason: string): Promise<HandoffResult> =>
+    apiFetch(`/api/workspaces/${workspaceId}/conversations/${conversationId}/handoff`, { method: 'POST', body: JSON.stringify({ reason }) }),
+  resumeAi: (workspaceId: string, conversationId: string): Promise<{ resumed: boolean }> =>
+    apiFetch(`/api/workspaces/${workspaceId}/conversations/${conversationId}/ai-resume`, { method: 'POST', body: JSON.stringify({}) }),
   createWidgetSession: (payload: { key: string; name?: string; email?: string; parent_origin?: string }): Promise<{ token: string; conversation_id: string; customer_id: string; expires_at: string }> =>
     widgetFetch('/api/widget/sessions', { method: 'POST', body: JSON.stringify(payload) }),
   sendWidgetMessage: (payload: { token: string; body: string; client_message_id?: string; parent_origin?: string }): Promise<{ message_id: string }> =>

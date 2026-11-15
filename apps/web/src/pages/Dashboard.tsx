@@ -38,6 +38,11 @@ export default function Dashboard() {
     queryFn: () => api.listTickets(workspaceId!, { page: 1, pageSize: 5 }),
     enabled,
   });
+  const aiOverviewQ = useQuery({
+    queryKey: ['ai-overview', workspaceId],
+    queryFn: () => api.getAiOverview(workspaceId!),
+    enabled,
+  });
   const recentConvsQ = useQuery({
     queryKey: ['recent-conversations', workspaceId],
     queryFn: () => api.listConversations(workspaceId!, { page: 1, pageSize: 5 }),
@@ -93,6 +98,50 @@ export default function Dashboard() {
                 <p className="mt-1 text-xs text-slate-500">{c.note}</p>
               </div>
             ))}
+      </div>
+
+      {/* AI & Automation overview — real values from GET /ai-overview. */}
+      <div className="rounded-xl border border-slate-700/60 bg-card p-5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h2 className="font-semibold text-white">AI &amp; Automation</h2>
+          <Link to="/automations" className="text-sm text-purple-300 hover:underline">View automation activity</Link>
+        </div>
+        {aiOverviewQ.isLoading ? (
+          <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            {[0, 1, 2, 3, 4, 5].map((i) => <Skeleton key={i} className="h-20" />)}
+          </div>
+        ) : aiOverviewQ.isError ? (
+          <div className="mt-4 rounded-lg border border-danger/50 bg-danger/10 p-4 text-sm text-red-300" role="alert">
+            Could not load AI overview: {(aiOverviewQ.error as Error).message}
+            <button onClick={() => void aiOverviewQ.refetch()} className="ml-3 rounded-lg bg-primary px-3 py-1 text-xs font-medium text-white hover:bg-purple-600">
+              Retry
+            </button>
+          </div>
+        ) : aiOverviewQ.data ? (
+          <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <div>
+              <p className="text-sm text-slate-400">AI status</p>
+              <p className="mt-2 text-xl font-bold text-white">
+                <span>{aiOverviewQ.data.ai_enabled ? 'Enabled' : 'Disabled'}</span>
+                <span className="ml-2 text-sm font-medium capitalize text-slate-400">{aiOverviewQ.data.mode.replace(/_/g, ' ')}</span>
+              </p>
+            </div>
+            {[
+              { label: 'Automation pending', value: aiOverviewQ.data.automation.pending },
+              { label: 'Automation failed', value: aiOverviewQ.data.automation.failed },
+              { label: 'AI-assisted conversations', value: aiOverviewQ.data.totals.assisted_conversations },
+              { label: 'Suggestions', value: aiOverviewQ.data.totals.suggestions },
+              { label: 'Auto replies', value: aiOverviewQ.data.totals.auto_replies },
+              { label: 'Handoffs', value: aiOverviewQ.data.totals.handoffs },
+              { label: 'Failed executions', value: aiOverviewQ.data.totals.failed_executions },
+            ].map((c) => (
+              <div key={c.label}>
+                <p className="text-sm text-slate-400">{c.label}</p>
+                <p className="mt-2 text-xl font-bold text-white">{c.value}</p>
+              </div>
+            ))}
+          </div>
+        ) : null}
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">

@@ -146,6 +146,9 @@ if (wsStatus === 'empty' || !workspaceId) return <NoWorkspaceState />;
                 <tr key={t.id} className="border-b border-slate-800 hover:bg-slate-800/50">
                   <td className="px-4 py-3">
                     <Link to={`/tickets/${t.id}`} className="font-medium text-white hover:underline">{t.subject}</Link>
+                    {t.escalation_reason && (
+                      <span className="ml-2 rounded-full bg-warning/15 px-2 py-0.5 text-[11px] font-medium text-amber-300">Escalated</span>
+                    )}
                     <span className="block text-xs text-slate-500">{t.category}</span>
                   </td>
                   <td className="px-4 py-3"><StatusBadge status={t.status} /></td>
@@ -209,6 +212,9 @@ function Kanban({ tickets, onStatusChange }: { tickets: Ticket[]; onStatusChange
               {col.map((t) => (
                 <li key={t.id} className="rounded-lg bg-slate-800 p-3">
                   <Link to={`/tickets/${t.id}`} className="text-sm font-medium text-white hover:underline">{t.subject}</Link>
+                  {t.escalation_reason && (
+                    <span className="ml-2 rounded-full bg-warning/15 px-2 py-0.5 text-[11px] font-medium text-amber-300">Escalated</span>
+                  )}
                   <div className="mt-2 flex items-center gap-2"><PriorityBadge priority={t.priority} /></div>
                   <label className="mt-2 block text-xs text-slate-400">Move to
                     <select
@@ -408,6 +414,18 @@ if (wsStatus === 'empty' || !workspaceId) return <NoWorkspaceState />;
           <textarea className={`${inputCls} mt-4`} value={editDescription} onChange={(e) => setEditDescription(e.target.value)} rows={4} aria-label="Ticket description" />
         ) : (
           <p className="mt-4 whitespace-pre-wrap text-sm text-slate-200">{ticket.description ?? 'No description.'}</p>
+        )}
+
+        {ticket.escalation_reason && (
+          <div className="mt-4 rounded-lg border border-warning/50 bg-warning/10 p-3 text-sm" role="note">
+            <p className="font-medium text-amber-300">Escalated: {ticket.escalation_reason}</p>
+            {ticket.escalated_at && <p className="mt-1 text-xs text-slate-400">Escalated {formatTime(ticket.escalated_at)}</p>}
+            {ticket.conversation_id && (
+              <Link to={`/inbox/${ticket.conversation_id}`} className="mt-1 inline-block text-purple-300 hover:underline">
+                Open conversation
+              </Link>
+            )}
+          </div>
         )}
 
         <div className="mt-4 grid gap-3 sm:grid-cols-3">
