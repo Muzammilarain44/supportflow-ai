@@ -410,10 +410,10 @@ describe('widget-settings origin validation (API)', () => {
 });
 
 describe('widget CORS + version (API)', () => {
-  it('/health reports version 0.3.1', async () => {
+  it('/health reports version 0.3.2', async () => {
     const res = await request(app).get('/health');
     expect(res.status).toBe(200);
-    expect(res.body.version).toBe('0.3.1');
+    expect(res.body.version).toBe('0.3.2');
   });
 
   it('preflight from the app own origin is reflected; a foreign origin is never granted', async () => {

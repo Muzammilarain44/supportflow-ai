@@ -3,7 +3,7 @@
 // Pure chunking/prompt tests + retrieveKnowledge/reindexDocument against a
 // small in-memory fake Supabase client. No real Groq/Gemini, no live DB.
 import { describe, it, expect, beforeEach } from 'vitest';
-import { chunkText, retrieveKnowledge, reindexDocument } from '../lib/rag.js';
+import { chunkText, retrieveKnowledge, reindexDocument, buildOrWebsearchQuery } from '../lib/rag.js';
 import { buildUserPrompt, stripInstructionLikeLines, UNTRUSTED_CUSTOMER_LABEL, UNTRUSTED_KNOWLEDGE_LABEL } from '../lib/prompts.js';
 
 // ---------------------------------------------------------------------------
@@ -22,6 +22,11 @@ const state = {
 
 let seq = 0;
 const nextId = () => `00000000-0000-4000-8000-${String(++seq).padStart(12, '0')}`;
+
+// Captures the last textSearch call so tests can assert the fallback
+// passes an explicit-OR websearch query (migration 0012 alignment).
+let lastTextSearchQuery: string | null = null;
+let lastTextSearchOptions: { type?: string; config?: string } | null = null;
 
 function tableRows(table: string): Row[] {
   if (table === 'knowledge_documents') return state.docs;
@@ -88,7 +93,12 @@ class Builder {
     this.filters.push((r) => Array.isArray(r[col]) && vals.every((v) => (r[col] as unknown[]).includes(v)));
     return this;
   }
-  textSearch(_col: string, query: string) { this.textSearchTerm = query; return this; }
+  textSearch(_col: string, query: string, opts?: { type?: string; config?: string }) {
+    this.textSearchTerm = query;
+    lastTextSearchQuery = query;
+    lastTextSearchOptions = opts ?? null;
+    return this;
+  }
   order(col: string, opts?: { ascending?: boolean }) {
     this.orders.push({ col, asc: opts?.ascending ?? true });
     return this;
@@ -194,6 +204,8 @@ beforeEach(() => {
   state.jobs.length = 0;
   state.rpcShouldFail = false;
   state.chunkInsertShouldFail = false;
+  lastTextSearchQuery = null;
+  lastTextSearchOptions = null;
   seq = 0;
 });
 
@@ -281,9 +293,22 @@ describe('retrieveKnowledge', () => {
     // Live E2E (migration 0009): "Hi, can you please confirm your refund
     // policy?" returned 0 rows because plainto_tsquery ANDs every lexeme
     // and the chunk contains none of hi / please / confirm / get.
-    // Migration 0011 keeps the strict AND tier first and fills the rest
-    // with websearch OR matches, so this question must retrieve doc-1.
+    // Migration 0011 tried websearch_to_tsquery for the OR tier, but
+    // that ANDs unquoted terms too — live proof: "refund policy
+    // confirm" still returned 0 rows. Migration 0012 builds the tier-2
+    // tsquery as an explicit OR over the query's lexemes, so this
+    // question must retrieve doc-1.
     const results = await retrieveKnowledge(fakeSupabase, 'ws-1', 'Hi, can you please confirm your refund policy?', 5);
+    expect(results.length).toBeGreaterThanOrEqual(1);
+    expect(results[0]!.documentId).toBe('doc-1');
+    expect(results[0]!.chunk).toContain('refund policy');
+  });
+
+  it("'refund policy confirm' retrieves the chunk (explicit OR, not AND over every word)", async () => {
+    // Live proof for migration 0012: under 0011 this query returned
+    // 0 rows (websearch_to_tsquery ANDs unquoted terms); with the
+    // explicit-OR tier 2, any lexeme matches.
+    const results = await retrieveKnowledge(fakeSupabase, 'ws-1', 'refund policy confirm', 5);
     expect(results.length).toBeGreaterThanOrEqual(1);
     expect(results[0]!.documentId).toBe('doc-1');
     expect(results[0]!.chunk).toContain('refund policy');
@@ -294,6 +319,28 @@ describe('retrieveKnowledge', () => {
     const results = await retrieveKnowledge(fakeSupabase, 'ws-1', 'Hi, can you please confirm your refund policy?', 5);
     expect(results.length).toBeGreaterThanOrEqual(1);
     expect(results[0]!.documentId).toBe('doc-1');
+  });
+
+  it('fallback sends an explicit-OR websearch query, not the raw question', async () => {
+    state.rpcShouldFail = true;
+    const results = await retrieveKnowledge(fakeSupabase, 'ws-1', 'Hi, can you please confirm your refund policy?', 5);
+    expect(results.length).toBeGreaterThanOrEqual(1);
+    // A raw natural question would be ANDed by websearch_to_tsquery
+    // and retrieve nothing live; the fallback must OR-join the terms.
+    expect(lastTextSearchQuery).not.toBeNull();
+    expect(lastTextSearchQuery).not.toBe('Hi, can you please confirm your refund policy?');
+    expect(lastTextSearchQuery).toContain(' OR ');
+    expect(lastTextSearchQuery).toContain('refund');
+    expect(lastTextSearchQuery).toContain('policy');
+    expect(lastTextSearchOptions).toEqual({ type: 'websearch', config: 'english' });
+  });
+
+  it("'refund policy confirm' retrieves via the textSearch fallback too", async () => {
+    state.rpcShouldFail = true;
+    const results = await retrieveKnowledge(fakeSupabase, 'ws-1', 'refund policy confirm', 5);
+    expect(results.length).toBeGreaterThanOrEqual(1);
+    expect(results[0]!.documentId).toBe('doc-1');
+    expect(lastTextSearchQuery).toBe('refund OR policy OR confirm');
   });
 
   it('orders by relevance: chunks matching more query terms rank first', async () => {
@@ -335,6 +382,24 @@ describe('retrieveKnowledge', () => {
   it('respects the limit', async () => {
     const results = await retrieveKnowledge(fakeSupabase, 'ws-1', 'refund', 1);
     expect(results).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Explicit-OR websearch query (migration 0012 fallback alignment)
+// ---------------------------------------------------------------------------
+
+describe('buildOrWebsearchQuery', () => {
+  it('joins terms with OR and drops short terms', () => {
+    expect(buildOrWebsearchQuery('Hi, can you please confirm your refund policy?')).toBe(
+      'can OR you OR please OR confirm OR your OR refund OR policy',
+    );
+    expect(buildOrWebsearchQuery('refund policy confirm')).toBe('refund OR policy OR confirm');
+  });
+
+  it('returns empty when there are no usable terms', () => {
+    expect(buildOrWebsearchQuery('hi to')).toBe('');
+    expect(buildOrWebsearchQuery('   ')).toBe('');
   });
 });
 

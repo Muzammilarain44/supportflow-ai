@@ -1,13 +1,13 @@
-# Phase 3 migrations — 0009 (required) + 0010 (optional) + 0011 (required fix)
+# Phase 3 migrations — 0009 (required) + 0010 (optional) + 0011 (required fix, superseded by 0012) + 0012 (required fix)
 
 Apply in Supabase Dashboard > SQL Editor, in order, after
 `0008_phase2_1_widget_origins.sql`. All files are idempotent
 (`IF NOT EXISTS`, `DROP ... IF EXISTS`, `CREATE OR REPLACE`).
 
-> **Status: UNAPPLIED and UNVERIFIED live.** Nothing in this document
-> has been run against the live Supabase project. The statements below
-> were reviewed by reading the SQL and by automated tests that assert
-> on the file contents and on the RPC contract (see
+> **Status: 0009–0011 APPLIED live 2026-11-15 and verified. 0012 NOT
+> YET APPLIED — the parent applies it (SQL Editor) and redeploys the
+> backend. The 0012 statements below were reviewed by reading the SQL
+> and by automated tests that assert on the file contents (see
 > `apps/api/src/__tests__/app-phase3-outbox.test.ts`); they have not
 > been executed against a real database.
 
@@ -76,9 +76,10 @@ They are the dispatcher's only interface to the outbox.
   `SECURITY DEFINER`, `STABLE`, `set search_path = public`, revoked
   from `public`, granted to `authenticated` and `service_role`. Lexical
   full-text search only: tier 1 is the strict `plainto_tsquery`
-  AND match, tier 2 (migration 0011) fills remaining slots with
-  `websearch_to_tsquery` OR matches for natural questions — see
-  `0011_phase3_kb_retrieval_or_fallback.sql` and `docs/phase3-rag.md`.
+  AND match, tier 2 (migration 0012, replacing the 0011 attempt — see
+  below) fills remaining slots with an explicitly OR-joined tsquery
+  built from the query's lexemes, for natural questions — see
+  `0012_phase3_kb_retrieval_explicit_or.sql` and `docs/phase3-rag.md`.
   Filtered to the given workspace with `enabled=true` and
   `archived=false`, ordered by tier then `ts_rank` desc. This is Worker B's
   primary retrieval path (`retrieveKnowledge` in
@@ -105,19 +106,45 @@ and nothing in 0009 depends on it.
 > a later phase actually implements vector search. Applying it only
 > requires the pgvector extension to be available on the project.
 
-## 0011 — `0011_phase3_kb_retrieval_or_fallback.sql` (required fix)
+## 0011 — `0011_phase3_kb_retrieval_or_fallback.sql` (required fix, SUPERSEDED by 0012)
 
 Replaces `search_knowledge_chunks` (same signature, same grants) with a
 two-tier version. Live E2E found the 0009 version returned 0 rows for
 natural questions: `plainto_tsquery` ANDs every lexeme, so "Hi, can you
 please confirm your refund policy?" matched nothing. Tier 1 is the
 unchanged strict AND query (keyword queries behave exactly as before);
-tier 2 fills remaining slots with `websearch_to_tsquery` OR matches
-(unquoted terms OR'd, quoted phrases AND'd), excluding rows already in
-tier 1. Workspace filtering and enabled / non-archived-only documents
-are unchanged in both tiers. No tables, columns, policies or data
-change. Idempotent (`CREATE OR REPLACE` + same grants) — safe to
-re-apply.
+tier 2 was meant to fill remaining slots with `websearch_to_tsquery`
+OR matches — **but that assumption was wrong**: `websearch_to_tsquery`
+ANDs unquoted terms (only an explicit OR keyword ORs), so tier 2 was
+effectively identical to tier 1 and natural questions still returned
+0 rows live ("refund policy" -> 1 row, "refund policy confirm" ->
+0 rows). Do not reintroduce `websearch_to_tsquery` for this. Workspace
+filtering and enabled / non-archived-only documents are unchanged in
+both tiers. No tables, columns, policies or data change. Applied live
+2026-11-15 (DROP-first — `CREATE OR REPLACE` alone failed live with
+ERROR 42P13 on the first attempt). **Superseded by 0012**, which keeps
+tier 1 and rebuilds tier 2 as an explicit OR over the query's lexemes.
+
+## 0012 — `0012_phase3_kb_retrieval_explicit_or.sql` (required fix)
+
+Replaces `search_knowledge_chunks` again (same signature, same
+grants). Tier 1 is the unchanged strict AND query. Tier 2 now builds
+an EXPLICITLY OR-joined tsquery from the query's lexemes:
+`to_tsvector('english', p_query)` yields the lexemes (stop words
+already dropped), `tsvector_to_array` exposes them, and they are
+joined with `' | '` (each single-quoted, so it is taken as an
+already-normalized lexeme matching the chunk `search_vector`
+exactly) and parsed with `to_tsquery`. Any lexeme matching a chunk
+counts, so natural questions retrieve. Workspace filtering and
+enabled / non-archived-only documents are unchanged in both tiers.
+No tables, columns, policies or data change. Idempotent (DROP first,
+then CREATE — `CREATE OR REPLACE` alone fails live with ERROR 42P13
+when the live return type differs, lesson from 0011; grants are
+re-applied after the DROP). The `rag.ts` PostgREST fallback is
+aligned the same way: it now sends the question's terms joined with
+the explicit `OR` keyword (`buildOrWebsearchQuery`) instead of the
+raw question. **Not yet applied live** — apply it before re-running
+the live retrieval / grounding / unsafe-guard checks.
 
 ## How to apply (live, by hand — not done by this worker)
 
@@ -128,7 +155,10 @@ re-apply.
 3. Paste `0011_phase3_kb_retrieval_or_fallback.sql` → Run. Confirm no
    errors. (Required: without it, natural-language questions retrieve
    nothing.)
-3. Verify: the 7 tables exist with RLS enabled; the 3 RPCs exist and
+4. Paste `0012_phase3_kb_retrieval_explicit_or.sql` → Run. Confirm no
+   errors. (Required: 0011's tier 2 is a no-op — without 0012, natural
+   questions still retrieve nothing.)
+5. Verify: the 7 tables exist with RLS enabled; the 3 RPCs exist and
    are granted to `service_role` only; `select * from
    public.automation_events` as an authenticated member still works
    (member `SELECT` policy from 0003 is unchanged).

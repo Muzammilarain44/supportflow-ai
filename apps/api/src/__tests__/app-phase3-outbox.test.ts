@@ -471,6 +471,81 @@ describe('0011 migration SQL shape', () => {
   });
 });
 
+describe('0012 migration SQL shape', () => {
+  const migrationPath = path.join(
+    path.dirname(fileURLToPath(import.meta.url)),
+    '..',
+    '..',
+    '..',
+    '..',
+    'supabase',
+    'migrations',
+    '0012_phase3_kb_retrieval_explicit_or.sql',
+  );
+  const sql = readFileSync(migrationPath, 'utf8');
+
+  it('drops the function first, then recreates it with the same signature and grants', () => {
+    // DROP-first: CREATE OR REPLACE alone fails live with 42P13 when
+    // the live return type differs (lesson from 0011).
+    expect(sql).toContain('drop function if exists public.search_knowledge_chunks(uuid, text, int);');
+    const dropAt = sql.indexOf('drop function if exists public.search_knowledge_chunks');
+    const createAt = sql.indexOf('create or replace function public.search_knowledge_chunks(');
+    expect(dropAt).toBeGreaterThanOrEqual(0);
+    expect(createAt).toBeGreaterThan(dropAt);
+    expect(sql).toContain('p_workspace_id uuid');
+    expect(sql).toContain('p_query text');
+    expect(sql).toContain('p_limit int default 5');
+    expect(sql).toContain(
+      'grant execute on function public.search_knowledge_chunks(uuid, text, int) to authenticated, service_role',
+    );
+    expect(sql).toContain(
+      'revoke all on function public.search_knowledge_chunks(uuid, text, int) from public',
+    );
+  });
+
+  it('tier 1 is the strict AND match, tier 2 is an explicit OR over the query lexemes', () => {
+    expect(sql).toContain("plainto_tsquery('english', p_query) as q_and");
+    // Explicit OR: lexemes from to_tsvector, exposed by
+    // tsvector_to_array, joined with ' | ' and parsed by to_tsquery.
+    expect(sql).toContain("to_tsvector('english', p_query)");
+    expect(sql).toContain('tsvector_to_array');
+    expect(sql).toContain("string_agg('''' || lexeme || '''', ' | ')");
+    expect(sql).toContain("to_tsquery('english', string_agg");
+    expect(sql).toContain('ts_rank(c.search_vector, p.q_and)');
+    expect(sql).toContain('ts_rank(c.search_vector, p.q_or)');
+    expect(sql).toContain('and c.search_vector @@ p.q_and');
+    expect(sql).toContain('and c.search_vector @@ p.q_or');
+    expect(sql).toContain('and not (c.search_vector @@ p.q_and)');
+    expect(sql).toContain('order by tier asc, rank desc');
+  });
+
+  it('does not use websearch_to_tsquery anywhere in the executable SQL', () => {
+    // The 0011 mistake: websearch_to_tsquery ANDs unquoted terms. The
+    // header comment mentions it in prose, so strip comments first.
+    const sqlNoComments = sql.replace(/^--.*$/gm, '');
+    expect(sqlNoComments).not.toContain('websearch_to_tsquery');
+  });
+
+  it('keeps the workspace / enabled / non-archived filters in both tiers', () => {
+    const andMatches = sql.match(/c\.workspace_id = p_workspace_id/g) ?? [];
+    expect(andMatches.length).toBe(2);
+    expect((sql.match(/d\.enabled = true/g) ?? []).length).toBe(2);
+    expect((sql.match(/d\.archived = false/g) ?? []).length).toBe(2);
+  });
+
+  it('changes no tables, columns, policies or data', () => {
+    // Negative checks run on comment-stripped SQL: the header comments
+    // mention these words in prose ("No tables, columns, policies or
+    // data change").
+    const sqlNoComments = sql.replace(/^--.*$/gm, '');
+    expect(sqlNoComments).not.toMatch(/create table/i);
+    expect(sqlNoComments).not.toMatch(/alter table/i);
+    expect(sqlNoComments).not.toMatch(/enable row level security/i);
+    expect(sqlNoComments).not.toMatch(/create policy/i);
+    expect(sqlNoComments).not.toMatch(/^\s*(insert|update|delete)\s+into\s+public\./im);
+  });
+});
+
 describe('outbox RPC contract via mocked Supabase client', () => {
   beforeEach(() => seedEvents());
 

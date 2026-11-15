@@ -40,17 +40,30 @@ Primary path — full-text search with ranking, via the RPC
 `search_knowledge_chunks(p_workspace_id, p_query, p_limit)`:
 
 ```sql
--- Required RPC (migration 0009, fixed in 0011).
+-- Required RPC (migration 0009, fixed in 0011, corrected in 0012).
 -- SECURITY DEFINER so the service-role processor can read across RLS;
 -- workspace filtering is enforced inside the function.
 --
 -- Two tiers: the strict plainto_tsquery AND match runs first (tier 1 —
 -- keyword queries behave exactly as in 0009), then any remaining slots
--- are filled with websearch_to_tsquery OR matches (tier 2 — natural
--- questions: unquoted terms are OR'd, quoted phrases are AND'd). The
--- AND-only version returned 0 rows for natural questions ("Hi, can you
--- please confirm your refund policy?") because the chunk contains none
--- of hi / please / confirm / get — see migration 0011.
+-- are filled with an explicitly OR-joined tsquery built from the query's
+-- lexemes (tier 2 — natural questions). Migration 0011 tried
+-- websearch_to_tsquery for tier 2 on the assumption that unquoted terms
+-- are OR'd; that assumption is WRONG — websearch_to_tsquery ANDs
+-- unquoted terms (only an explicit OR keyword ORs), so tier 2 was
+-- effectively identical to tier 1 and natural questions still returned
+-- 0 rows live ("refund policy" -> 1 row, "refund policy confirm" ->
+-- 0 rows). Migration 0012 fixes it: to_tsvector('english', p_query)
+-- yields the lexemes (stop words already dropped), tsvector_to_array
+-- exposes them, and they are joined with ' | ' (each single-quoted, so
+-- it is taken as an already-normalized lexeme matching the chunk
+-- search_vector exactly).
+--
+-- DROP first, then CREATE: CREATE OR REPLACE alone fails live with
+-- ERROR 42P13 when the live return type differs (lesson from 0011).
+-- Grants are re-applied after the DROP.
+drop function if exists public.search_knowledge_chunks(uuid, text, int);
+
 create or replace function public.search_knowledge_chunks(
   p_workspace_id uuid,
   p_query text,
@@ -70,7 +83,13 @@ as $$
   with params as (
     select
       plainto_tsquery('english', p_query) as q_and,
-      websearch_to_tsquery('english', p_query) as q_or
+      coalesce(
+        (
+          select to_tsquery('english', string_agg('''' || lexeme || '''', ' | '))
+          from unnest(tsvector_to_array(to_tsvector('english', p_query))) as lexeme
+        ),
+        ''::tsquery
+      ) as q_or
   ),
   tiered as (
     select
@@ -107,26 +126,40 @@ as $$
   order by tier asc, rank desc
   limit p_limit;
 $$;
+
+revoke all on function public.search_knowledge_chunks(uuid, text, int) from public;
+grant execute on function public.search_knowledge_chunks(uuid, text, int) to authenticated, service_role;
 ```
 
 Notes on the RPC:
 
 - Tier 1 `plainto_tsquery('english', p_query)` — plain-text query, English
   stemming/stop-words, all lexemes required (AND).
-- Tier 2 `websearch_to_tsquery('english', p_query)` — natural language,
-  unquoted terms OR'd, quoted phrases AND'd; only fills slots tier 1
-  left empty, and never repeats a tier-1 row.
+- Tier 2 — explicit OR over the query's lexemes (migration 0012):
+  `to_tsvector('english', p_query)` yields the lexemes, `tsvector_to_array`
+  exposes them, they are joined with `' | '` (each single-quoted, so it is
+  taken as an already-normalized lexeme), and the result is parsed with
+  `to_tsquery`. Any lexeme matching a chunk counts; only fills slots tier 1
+  left empty, and never repeats a tier-1 row. The 0011 attempt used
+  `websearch_to_tsquery` here, which ANDs unquoted terms — that is why
+  natural questions still returned 0 rows live; do not reintroduce it.
 - Only chunks whose document is `enabled` and not `archived` are
   returned; workspace filtering is by `p_workspace_id` on the chunks
   table.
 - Grant `EXECUTE` to `authenticated` and `service_role` as appropriate;
   revoke from `public` (same pattern as the Phase 2 RPCs).
 - If this RPC does not exist yet (migration not applied), the API falls
-  back to a PostgREST `textSearch('search_vector', query, {type:
-  'websearch', config: 'english'})` query with the same workspace /
-  enabled / not-archived filters and a client-side term-overlap rank.
-  Retrieval still works; ranking is cruder. The fallback is a safety
-  net, not the design.
+  back to a PostgREST `textSearch('search_vector', orQuery, {type:
+  'websearch', config: 'english'})` query where `orQuery` is the
+  question's terms joined with the explicit `OR` keyword
+  (`buildOrWebsearchQuery` in `apps/api/src/lib/rag.ts` — a raw natural
+  question would be ANDed by `websearch_to_tsquery` and retrieve
+  nothing), with the same workspace / enabled / not-archived filters
+  and a client-side term-overlap rank. Retrieval still works; ranking
+  is cruder. The fallback is a safety net, not the design, and it is
+  covered by unit tests with a mocked client only — it is not
+  live-verified, and it runs only when the RPC is absent, which is not
+  the live configuration.
 
 ## Indexing (`reindexDocument`)
 
@@ -179,11 +212,13 @@ following embedded instructions.
 
 List responses are `{items, total, page, pageSize}`.
 
-## What is NOT verified here (Worker B scope)
+## What is NOT verified here
 
-- Migration 0009 is unapplied in this copy, so the RPC above and the
-  tables do not exist live; retrieval is covered by unit tests with a
-  fake Supabase client only.
+- Migrations 0009–0011 are applied live; migration 0012 is NOT yet
+  applied live (the parent applies it and redeploys). The 0012 SQL has
+  been reviewed by reading it and is covered by automated SQL-shape
+  tests plus unit tests with a fake Supabase client; it has NOT been
+  executed against a real database.
 - Retrieval quality (ranking on real data) has not been measured; the
   5-chunk limit and 1000/200 chunking are starting defaults, tunable
   per workspace feedback.

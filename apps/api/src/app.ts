@@ -30,7 +30,7 @@ export function createApp(env: Env): Express {
   app.use('/api/automation', express.raw({ type: 'application/json', limit: '1mb' }), automationRouter(env));
   app.use(express.json({ limit: '1mb' }));
   app.use((req, _res, next) => { logger.info(`${req.method} ${req.path}`); next(); });
-  app.get('/health', (_req, res) => res.json({ status: 'ok', service: 'supportflow-api', version: '0.3.1' }));
+  app.get('/health', (_req, res) => res.json({ status: 'ok', service: 'supportflow-api', version: '0.3.2' }));
 
   // Generous limit for the authenticated API: 300 requests / 15 min per user.
   // Runs AFTER authMiddleware so the limiter key includes the user id.

@@ -3,10 +3,10 @@
 //
 // LEXICAL ONLY — no vector / embedding retrieval in Phase 3. Retrieval is
 // PostgreSQL full-text search (two-tier: strict plainto_tsquery AND match
-// first, then a websearch_to_tsquery OR fallback for natural questions —
-// see migration 0011) against knowledge_chunks.search_vector, ordered by
-// ts_rank with tier-1 matches first, workspace filtered, and only chunks
-// whose document is enabled and not archived.
+// first, then an explicitly OR-joined tsquery built from the query's
+// lexemes — see migration 0012) against knowledge_chunks.search_vector,
+// ordered by ts_rank with tier-1 matches first, workspace filtered, and
+// only chunks whose document is enabled and not archived.
 //
 // The ts_rank query runs through the SECURITY DEFINER RPC
 // `search_knowledge_chunks(p_workspace_id, p_query, p_limit)` — see
@@ -138,6 +138,27 @@ function termOverlapRank(query: string, text: string): number {
 }
 
 /**
+ * Build an explicit-OR websearch query from a natural-language question.
+ * PostgreSQL's websearch_to_tsquery ANDs unquoted space-separated terms
+ * (verified live 2026-11-15 — the migration 0011 assumption that they
+ * are OR'd is wrong), so the fallback joins the query's terms with the
+ * OR keyword: websearch_to_tsquery('english', 'refund OR policy OR
+ * confirm') is 'refund' | 'polici' | 'confirm'. Terms use the same split
+ * as termOverlapRank (length > 2); stop words are dropped by the
+ * websearch parser itself. Returns '' when the query has no usable
+ * terms. This mirrors migration 0012's explicit-OR tier 2 (which builds
+ * the OR tsquery from the query's lexemes server-side) for the
+ * PostgREST path, where no OR tsquery can be passed directly.
+ */
+export function buildOrWebsearchQuery(query: string): string {
+  return query
+    .toLowerCase()
+    .split(/\W+/)
+    .filter((t) => t.length > 2)
+    .join(' OR ');
+}
+
+/**
  * Lexical retrieval: full-text search over knowledge_chunks, workspace
  * filtered, only chunks of enabled + non-archived documents, best rank
  * first. Returns at most `limit` chunks (default 5).
@@ -165,15 +186,19 @@ export async function retrieveKnowledge(
         rank: typeof row.rank === 'number' ? row.rank : 0,
       }));
   }
-  // Fallback path: PostgREST textSearch (websearch_to_tsquery, english
-  // config — same OR semantics as the RPC's tier 2, so natural questions
-  // still retrieve) with the same filters; rank is a client-side
-  // term-overlap score.
+  // Fallback path: PostgREST textSearch with an explicit-OR websearch
+  // query (see buildOrWebsearchQuery — a raw natural question would be
+  // ANDed by websearch_to_tsquery and retrieve nothing) and the same
+  // filters; rank is a client-side term-overlap score. The fallback is
+  // unit-tested with a mocked client only — it runs only when the RPC
+  // is absent, which is not the live configuration.
+  const orQuery = buildOrWebsearchQuery(query);
+  if (!orQuery) return [];
   const { data: rows, error: fallbackError } = await supabase
     .from('knowledge_chunks')
     .select('content,document_id,source_title,knowledge_documents!inner(title,enabled,archived)')
     .eq('workspace_id', workspaceId)
-    .textSearch('search_vector', query, { type: 'websearch', config: 'english' });
+    .textSearch('search_vector', orQuery, { type: 'websearch', config: 'english' });
   if (fallbackError || !rows) return [];
   const scored = (rows as Array<{
     content: string;
