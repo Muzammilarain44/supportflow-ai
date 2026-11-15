@@ -130,7 +130,7 @@ export const api = {
     apiFetch(`/api/workspaces/${workspaceId}/customers${qs(params)}`),
   createCustomer: (workspaceId: string, payload: { full_name: string; email: string; phone?: string | null; tags?: string[]; notes?: string | null }): Promise<{ customer: Customer }> =>
     apiFetch(`/api/workspaces/${workspaceId}/customers`, { method: 'POST', body: JSON.stringify(payload) }),
-  getCustomer: (workspaceId: string, id: string): Promise<{ customer: Customer; tickets: { total: number }; conversations: { total: number }; recent_conversations: Array<{ id: string; status: string; priority: string; last_message_at: string | null; created_at: string }> }> =>
+  getCustomer: (workspaceId: string, id: string): Promise<{ customer: Customer; tickets: { total: number }; conversations: { total: number }; recent_conversations: Array<{ id: string; status: string; priority: string; last_message_at: string | null; created_at: string; last_message: { body: string; created_at: string } | null }>; recent_tickets: Ticket[] }> =>
     apiFetch(`/api/workspaces/${workspaceId}/customers/${id}`),
   updateCustomer: (workspaceId: string, id: string, payload: Partial<{ full_name: string; email: string; phone: string | null; tags: string[]; notes: string | null }>): Promise<{ customer: Customer }> =>
     apiFetch(`/api/workspaces/${workspaceId}/customers/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),

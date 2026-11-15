@@ -53,7 +53,7 @@ Profile visibility is workspace-scoped by RLS (migration 0006): a profile is rea
 | --- | --- | --- | --- |
 | GET | `/` | Bearer + member | List, server-side pagination. `?search=` matches name/email, `?tag=` filters by tag. Returns `{customers, total, page, pageSize}` |
 | POST | `/` | Bearer + member | Create. Duplicate email in the workspace → **409** `A customer with this email already exists in this workspace` (Postgres 23505) |
-| GET | `/:customerId` | Bearer + member | Customer + `{tickets: {total}, conversations: {total}, recent_conversations: [...]}` (last 5) |
+| GET | `/:customerId` | Bearer + member | Customer + `{tickets: {total}, conversations: {total}, recent_conversations: [...]}` (last 5, each with a `last_message` preview) + `recent_tickets: [...]` (last 5 full rows). The profile page renders its histories from this single response — no separate list fetches. |
 | PATCH | `/:customerId` | Bearer + member | Update name/email/phone/tags/notes. Does **not** bump `last_activity_at` — only message inserts do (DB trigger, migration 0007) |
 
 ### Conversations — `/api/workspaces/:workspaceId/conversations`

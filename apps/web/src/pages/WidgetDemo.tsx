@@ -121,10 +121,15 @@ if (wsStatus === 'empty' || !workspaceId) return <NoWorkspaceState />;
             Widget enabled (visitors can start chats)
           </label>
           <label className="block text-sm text-slate-300">Allowed origins (one per line)
-            <textarea className={`${inputCls} mt-1`} value={originsText} onChange={(e) => setOriginsText(e.target.value)} rows={3} placeholder={'https://example.com\nhttps://shop.example.com'} />
+            <textarea className={`${inputCls} mt-1`} value={originsText} onChange={(e) => setOriginsText(e.target.value)} rows={3} placeholder="One origin per line" />
             <span className="mt-1 block text-xs text-slate-500">
               Enforced server-side since Phase 2.1: only these exact origins (plus this app's own domain for previews) may embed and use the widget. Empty list = only this app's own domain. See docs/phase2-1-origins.md.
             </span>
+            {settings && (settings.allowed_origins ?? []).length === 0 && (
+              <span className="mt-1 block text-xs text-amber-300">
+                No origins configured — only this app's own domain can embed the widget.
+              </span>
+            )}
           </label>
           <div className="flex justify-end">
             <button type="submit" disabled={saveMut.isPending} className={btnPrimary}>{saveMut.isPending ? 'Saving…' : settings ? 'Save settings' : 'Create widget'}</button>

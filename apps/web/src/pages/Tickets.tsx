@@ -18,9 +18,14 @@ function formatTime(iso: string): string {
   return new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
-/** Display name for an assignee id from the members-with-profiles list. */
-function assigneeName(members: MemberWithProfile[], userId: string | null): string | null {
+/** Display name for an assignee id from the members-with-profiles list.
+ * While the members are still loading the name cannot be resolved yet, so
+ * callers must show a loading placeholder instead of the 'Unnamed member'
+ * fallback — otherwise the table flashes the fallback on direct navigation
+ * while the members request is still in flight. */
+function assigneeName(members: MemberWithProfile[], membersLoading: boolean, userId: string | null): string | null {
   if (!userId) return null;
+  if (membersLoading) return '…';
   return members.find((m) => m.user_id === userId)?.display_name ?? 'Unnamed member';
 }
 
@@ -145,7 +150,7 @@ if (wsStatus === 'empty' || !workspaceId) return <NoWorkspaceState />;
                   </td>
                   <td className="px-4 py-3"><StatusBadge status={t.status} /></td>
                   <td className="px-4 py-3"><PriorityBadge priority={t.priority} /></td>
-                  <td className="px-4 py-3 text-slate-300">{assigneeName(members, t.assigned_to) ?? 'Unassigned'}</td>
+                  <td className="px-4 py-3 text-slate-300">{assigneeName(members, membersQ.isLoading, t.assigned_to) ?? 'Unassigned'}</td>
                   <td className="px-4 py-3 text-slate-400">{formatTime(t.updated_at)}</td>
                 </tr>
               ))}
@@ -426,6 +431,7 @@ if (wsStatus === 'empty' || !workspaceId) return <NoWorkspaceState />;
         <p className="mt-2 text-sm text-slate-400">
           Assigned to: {(() => {
             if (!ticket.assigned_to) return 'Unassigned';
+            if (membersQ.isLoading) return 'Loading…';
             const member = (membersQ.data?.members ?? []).find((m) => m.user_id === ticket.assigned_to);
             if (member) return `${member.display_name} (${member.role})`;
             return assigned_member ? `Unnamed member (${assigned_member.role})` : 'Unnamed member';

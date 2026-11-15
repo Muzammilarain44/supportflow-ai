@@ -194,18 +194,6 @@ export function CustomerDetailPage() {
     queryFn: () => api.getCustomer(workspaceId!, customerId!),
     enabled: !!workspaceId && !!customerId,
   });
-  const ticketsQ = useQuery({
-    queryKey: ['customer-tickets', workspaceId, customerId],
-    queryFn: () => api.listTickets(workspaceId!, { page: 1, pageSize: 20 }),
-    enabled: !!workspaceId,
-    select: (d) => d.tickets.filter((t) => t.customer_id === customerId),
-  });
-  const convsQ = useQuery({
-    queryKey: ['customer-conversations', workspaceId, customerId],
-    queryFn: () => api.listConversations(workspaceId!, { page: 1, pageSize: 20 }),
-    enabled: !!workspaceId,
-    select: (d) => d.conversations.filter((c) => c.customer_id === customerId),
-  });
 
   const notesMut = useMutation({
     mutationFn: (notes: string) => api.updateCustomer(workspaceId!, customerId!, { notes: notes || null }),
@@ -224,9 +212,13 @@ if (wsStatus === 'empty' || !workspaceId) return <NoWorkspaceState />;
   if (detailQ.isError || !detailQ.data) {
     return <div className="rounded-xl border border-danger/50 bg-danger/10 p-4 text-sm text-red-300" role="alert">Could not load this customer: {(detailQ.error as Error | undefined)?.message ?? 'Not found'}</div>;
   }
-  const { customer, tickets, conversations } = detailQ.data;
-  const linkedTickets = ticketsQ.data ?? [];
-  const linkedConvs = convsQ.data ?? [];
+  // Histories come from the detail response itself (recent_conversations +
+  // recent_tickets) — one request, one loading gate — instead of two extra
+  // client-side-filtered list fetches whose empty states rendered while
+  // they were still loading on direct navigation.
+  const { customer, tickets, conversations, recent_conversations, recent_tickets } = detailQ.data;
+  const linkedTickets = recent_tickets ?? [];
+  const linkedConvs = recent_conversations ?? [];
 
   return (
     <div className="space-y-4">
@@ -239,6 +231,7 @@ if (wsStatus === 'empty' || !workspaceId) return <NoWorkspaceState />;
           <div className="flex gap-2"><dt className="w-20 text-slate-500">Email</dt><dd>{customer.email}</dd></div>
           <div className="flex gap-2"><dt className="w-20 text-slate-500">Phone</dt><dd>{customer.phone ?? '—'}</dd></div>
           <div className="flex gap-2"><dt className="w-20 text-slate-500">Joined</dt><dd>{formatTime(customer.created_at)}</dd></div>
+          <div className="flex gap-2"><dt className="w-20 text-slate-500">Last activity</dt><dd>{customer.last_activity_at ? formatTime(customer.last_activity_at) : 'No activity yet'}</dd></div>
           <div className="flex gap-2"><dt className="w-20 text-slate-500">Tickets</dt><dd>{tickets.total}</dd></div>
           <div className="flex gap-2"><dt className="w-20 text-slate-500">Conversations</dt><dd>{conversations.total}</dd></div>
         </dl>

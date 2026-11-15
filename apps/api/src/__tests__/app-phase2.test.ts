@@ -716,6 +716,22 @@ describe('widget settings (admin)', () => {
   });
 });
 
+describe('customer detail linked rows (Phase 2.1 fix)', () => {
+  it('returns recent_tickets and recent_conversations with a last_message preview', async () => {
+    const res = await request(app).get(`${WS}/customers/${sharedCustomerId}`).set(auth);
+    expect(res.status).toBe(200);
+    expect(res.body.tickets.total).toBe(1);
+    expect(res.body.conversations.total).toBe(1);
+    expect(res.body.recent_tickets).toHaveLength(1);
+    expect(res.body.recent_tickets[0].id).toBe(sharedTicketId);
+    expect(res.body.recent_tickets[0].subject).toBe('Billing question');
+    expect(res.body.recent_conversations).toHaveLength(1);
+    expect(res.body.recent_conversations[0].id).toBe(sharedConversationId);
+    // Latest message in the conversation is the second agent reply.
+    expect(res.body.recent_conversations[0].last_message.body).toBe('Second reply');
+  });
+});
+
 describe('rate limiter', () => {
   it('returns 429 with Retry-After after the limit is exceeded', async () => {
     const tiny = express();

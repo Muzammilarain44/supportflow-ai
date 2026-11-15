@@ -99,11 +99,43 @@ export function customersRouter(env: Env) {
         .eq('customer_id', req.params.customerId)
         .order('created_at', { ascending: false })
         .limit(5);
+      const { data: recentTickets } = await supabase
+        .from('tickets')
+        .select('id,subject,description,category,priority,status,assigned_to,customer_id,conversation_id,created_at,updated_at,resolved_at')
+        .eq('workspace_id', workspaceId)
+        .eq('customer_id', req.params.customerId)
+        .order('created_at', { ascending: false })
+        .limit(5);
+      // Last-message preview for the recent conversations (same enrichment
+      // pattern as the conversations list endpoint).
+      const convIds = (recentConversations ?? []).map((c) => c.id as string);
+      const lastMessageByConv = new Map<string, { body: string; created_at: string }>();
+      if (convIds.length > 0) {
+        const { data: recent } = await supabase
+          .from('messages')
+          .select('conversation_id,body,created_at')
+          .eq('workspace_id', workspaceId)
+          .in('conversation_id', convIds)
+          .order('created_at', { ascending: false })
+          .limit(500);
+        for (const m of (recent ?? []) as Array<{ conversation_id: string; body: string; created_at: string }>) {
+          if (!lastMessageByConv.has(m.conversation_id)) {
+            lastMessageByConv.set(m.conversation_id, {
+              body: m.body.length > 200 ? `${m.body.slice(0, 200)}…` : m.body,
+              created_at: m.created_at,
+            });
+          }
+        }
+      }
       return res.json({
         customer,
         tickets: { total: ticketCount ?? 0 },
         conversations: { total: conversationCount ?? 0 },
-        recent_conversations: recentConversations ?? [],
+        recent_conversations: (recentConversations ?? []).map((c) => ({
+          ...c,
+          last_message: lastMessageByConv.get(c.id as string) ?? null,
+        })),
+        recent_tickets: recentTickets ?? [],
       });
     } catch (e) {
       return next(e);
