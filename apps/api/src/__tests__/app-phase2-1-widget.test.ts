@@ -212,7 +212,7 @@ vi.mock('../lib/supabase.js', () => {
   return { getSupabase: () => makeClient(), getUserSupabase: () => makeClient() };
 });
 
-import { createApp } from '../app.js';
+import { createApp, AUTHED_RATE_LIMIT_MAX } from '../app.js';
 import {
   isAllowedParentOrigin,
   isOwnOrigin,
@@ -410,10 +410,15 @@ describe('widget-settings origin validation (API)', () => {
 });
 
 describe('widget CORS + version (API)', () => {
-  it('/health reports version 0.3.2', async () => {
+  it('/health reports version 0.3.3', async () => {
     const res = await request(app).get('/health');
     expect(res.status).toBe(200);
-    expect(res.body.version).toBe('0.3.2');
+    expect(res.body.version).toBe('0.3.3');
+  });
+
+  it('authenticated rate limit is 1000/15min (raised from 300: ordinary Inbox use with 5s polling trips 300)', async () => {
+    // Pinned value, not behaviour: the mechanism is covered in app-phase2.test.ts.
+    expect(AUTHED_RATE_LIMIT_MAX).toBe(1000);
   });
 
   it('preflight from the app own origin is reflected; a foreign origin is never granted', async () => {

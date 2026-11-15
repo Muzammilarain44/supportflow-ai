@@ -193,6 +193,36 @@ is an env-var change, not a code change.
 invitations — workspaces still gain members only through the existing
 Phase 1 owner flow. Do not describe invitations as shipped.
 
+## API/web response-shape contract (UI fixes, 2026-11-15)
+
+The Phase 3 API list endpoints return generic keys — `items` for the
+suggestions, AI-executions and knowledge lists, `settings` for
+AI settings, `document` for single knowledge documents — while the web
+client was typed for named keys (`ai_suggestions`, `ai_executions`,
+`ai_settings`, `knowledge_document`). The mismatch was silent: the
+suggestion panel never rendered (a pending suggestion existed but the
+page read an empty list), the AI Settings page showed defaults
+(AI enabled unchecked while the workspace was enabled), and the
+Automations "Failed AI executions" section was always empty. The fix
+is web-side normalization in `apps/web/src/lib/api.ts` (same pattern
+the knowledge list already used), covered by live-shape regression
+tests in `apps/web/src/__tests__/phase3.test.tsx` that mock the real
+API payloads. Do not "fix" this by renaming the API keys — the
+`items`/`settings` shapes are the tested contract (API tests, E2E
+harness, n8n).
+
+Two more UI bugs fixed in the same round: the KB search box sent `q=`
+but the API reads `search` (`listQuerySchema`), so search never
+filtered — the client now sends `search=`; and the Automation
+Activity status filter offered `completed`, which the API rejects —
+the stored status is `processed`, so the filter now offers that.
+
+The authenticated rate limit was raised 300 → 1000 requests / 15 min
+per user (`AUTHED_RATE_LIMIT_MAX` in `apps/api/src/app.ts`, API
+0.3.3): ordinary dashboard use tripped 300 — the Inbox polls
+messages every 5s and every view fires several queries. The public
+widget per-IP limits are unchanged.
+
 ## Related docs
 
 - Setup (laptop + tunnel + Render): `docs/phase3-n8n-setup.md`

@@ -101,7 +101,7 @@ export default function Automations() {
           <h2 className="font-semibold text-white">Automation events</h2>
           <select className={selectCls} value={statusFilter} onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }} aria-label="Filter events by status">
             <option value="">All statuses</option>
-            {['pending', 'processing', 'failed', 'dead', 'completed'].map((s) => (
+            {['pending', 'processing', 'processed', 'failed', 'dead'].map((s) => (
               <option key={s} value={s}>{s}</option>
             ))}
           </select>

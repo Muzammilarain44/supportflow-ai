@@ -240,12 +240,16 @@ export const api = {
     widgetFetch(`/api/widget/config?key=${encodeURIComponent(key)}${parentOrigin ? `&parent_origin=${encodeURIComponent(parentOrigin)}` : ''}`),
 
   // ---------- Phase 3: knowledge base ----------
+  // NOTE (2026-11-15, UI E2E): the live API returns generic `items` /
+  // `document` keys on these endpoints while this client was typed for
+  // named keys. Normalize here (same pattern as listKnowledge below) so
+  // the pages render real data instead of silently empty lists.
   listKnowledge: async (
     workspaceId: string,
-    params: { q?: string; kind?: string; enabled?: boolean; page?: number; pageSize?: number } = {},
+    params: { search?: string; kind?: string; enabled?: boolean; page?: number; pageSize?: number } = {},
   ): Promise<{ knowledge_documents: KnowledgeDocument[]; total: number; page: number; pageSize: number }> => {
     const raw = await apiFetch(`/api/workspaces/${workspaceId}/knowledge${qs({
-      q: params.q, kind: params.kind,
+      search: params.search, kind: params.kind,
       enabled: params.enabled === undefined ? undefined : String(params.enabled),
       page: params.page, pageSize: params.pageSize,
     })}`) as { knowledge_documents?: KnowledgeDocument[]; items?: KnowledgeDocument[]; total: number; page: number; pageSize: number };
@@ -254,38 +258,64 @@ export const api = {
       total: raw.total ?? 0, page: raw.page ?? 1, pageSize: raw.pageSize ?? 20,
     };
   },
-  getKnowledge: (workspaceId: string, id: string): Promise<{ knowledge_document: KnowledgeDocument }> =>
-    apiFetch(`/api/workspaces/${workspaceId}/knowledge/${id}`),
-  createKnowledge: (workspaceId: string, payload: { title: string; content: string; kind: KnowledgeKind }): Promise<{ knowledge_document: KnowledgeDocument }> =>
-    apiFetch(`/api/workspaces/${workspaceId}/knowledge`, { method: 'POST', body: JSON.stringify(payload) }),
-  updateKnowledge: (workspaceId: string, id: string, payload: Partial<{ title: string; content: string; kind: KnowledgeKind; enabled: boolean }>): Promise<{ knowledge_document: KnowledgeDocument }> =>
-    apiFetch(`/api/workspaces/${workspaceId}/knowledge/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
-  deleteKnowledge: (workspaceId: string, id: string): Promise<{ knowledge_document: KnowledgeDocument }> =>
-    apiFetch(`/api/workspaces/${workspaceId}/knowledge/${id}`, { method: 'DELETE' }),
+  getKnowledge: async (workspaceId: string, id: string): Promise<{ knowledge_document: KnowledgeDocument }> => {
+    const raw = await apiFetch(`/api/workspaces/${workspaceId}/knowledge/${id}`) as { knowledge_document?: KnowledgeDocument; document?: KnowledgeDocument };
+    return { knowledge_document: raw.knowledge_document ?? raw.document! };
+  },
+  createKnowledge: async (workspaceId: string, payload: { title: string; content: string; kind: KnowledgeKind }): Promise<{ knowledge_document: KnowledgeDocument }> => {
+    const raw = await apiFetch(`/api/workspaces/${workspaceId}/knowledge`, { method: 'POST', body: JSON.stringify(payload) }) as { knowledge_document?: KnowledgeDocument; document?: KnowledgeDocument };
+    return { knowledge_document: raw.knowledge_document ?? raw.document! };
+  },
+  updateKnowledge: async (workspaceId: string, id: string, payload: Partial<{ title: string; content: string; kind: KnowledgeKind; enabled: boolean }>): Promise<{ knowledge_document: KnowledgeDocument }> => {
+    const raw = await apiFetch(`/api/workspaces/${workspaceId}/knowledge/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }) as { knowledge_document?: KnowledgeDocument; document?: KnowledgeDocument };
+    return { knowledge_document: raw.knowledge_document ?? raw.document! };
+  },
+  deleteKnowledge: async (workspaceId: string, id: string): Promise<{ knowledge_document: KnowledgeDocument }> => {
+    const raw = await apiFetch(`/api/workspaces/${workspaceId}/knowledge/${id}`, { method: 'DELETE' }) as { knowledge_document?: KnowledgeDocument; document?: KnowledgeDocument };
+    return { knowledge_document: raw.knowledge_document ?? raw.document! };
+  },
   reindexKnowledge: (workspaceId: string, id: string): Promise<{ job: unknown }> =>
     apiFetch(`/api/workspaces/${workspaceId}/knowledge/${id}/reindex`, { method: 'POST', body: JSON.stringify({}) }),
 
   // ---------- Phase 3: AI settings / overview ----------
-  getAiSettings: (workspaceId: string): Promise<{ ai_settings: AiSettings }> =>
-    apiFetch(`/api/workspaces/${workspaceId}/ai-settings`),
-  updateAiSettings: (workspaceId: string, payload: Partial<{ enabled: boolean; mode: AiMode; provider_order: string[]; auto_reply_require_grounding: boolean; escalation_on_low_confidence: boolean }>): Promise<{ ai_settings: AiSettings }> =>
-    apiFetch(`/api/workspaces/${workspaceId}/ai-settings`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  getAiSettings: async (workspaceId: string): Promise<{ ai_settings: AiSettings }> => {
+    const raw = await apiFetch(`/api/workspaces/${workspaceId}/ai-settings`) as { ai_settings?: AiSettings; settings?: AiSettings };
+    return { ai_settings: raw.ai_settings ?? raw.settings! };
+  },
+  updateAiSettings: async (workspaceId: string, payload: Partial<{ enabled: boolean; mode: AiMode; provider_order: string[]; auto_reply_require_grounding: boolean; escalation_on_low_confidence: boolean }>): Promise<{ ai_settings: AiSettings }> => {
+    const raw = await apiFetch(`/api/workspaces/${workspaceId}/ai-settings`, { method: 'PATCH', body: JSON.stringify(payload) }) as { ai_settings?: AiSettings; settings?: AiSettings };
+    return { ai_settings: raw.ai_settings ?? raw.settings! };
+  },
   getAiOverview: (workspaceId: string): Promise<AiOverview> =>
     apiFetch(`/api/workspaces/${workspaceId}/ai-overview`),
 
   // ---------- Phase 3: automation activity ----------
-  listAiExecutions: (workspaceId: string, params: { status?: string; page?: number; pageSize?: number } = {}): Promise<{ ai_executions: AiExecution[]; total: number; page: number; pageSize: number }> =>
-    apiFetch(`/api/workspaces/${workspaceId}/ai-executions${qs(params)}`),
+  listAiExecutions: async (workspaceId: string, params: { status?: string; page?: number; pageSize?: number } = {}): Promise<{ ai_executions: AiExecution[]; total: number; page: number; pageSize: number }> => {
+    const raw = await apiFetch(`/api/workspaces/${workspaceId}/ai-executions${qs(params)}`) as { ai_executions?: AiExecution[]; items?: AiExecution[]; total: number; page: number; pageSize: number };
+    return {
+      ai_executions: raw.ai_executions ?? raw.items ?? [],
+      total: raw.total ?? 0, page: raw.page ?? 1, pageSize: raw.pageSize ?? 20,
+    };
+  },
   listAutomationEvents: (workspaceId: string, params: { status?: string; page?: number; pageSize?: number } = {}): Promise<{ automation_events: AutomationEvent[]; total: number; page: number; pageSize: number }> =>
     apiFetch(`/api/workspaces/${workspaceId}/automation-events${qs(params)}`),
 
   // ---------- Phase 3: suggestions + handoff (per conversation) ----------
-  listSuggestions: (workspaceId: string, conversationId: string, params: { page?: number; pageSize?: number } = {}): Promise<{ ai_suggestions: AiSuggestion[]; total: number; page: number; pageSize: number }> =>
-    apiFetch(`/api/workspaces/${workspaceId}/conversations/${conversationId}/suggestions${qs(params)}`),
-  acceptSuggestion: (workspaceId: string, conversationId: string, suggestionId: string, payload: { edited_text?: string } = {}): Promise<{ ai_suggestion: AiSuggestion }> =>
-    apiFetch(`/api/workspaces/${workspaceId}/conversations/${conversationId}/suggestions/${suggestionId}/accept`, { method: 'POST', body: JSON.stringify(payload) }),
-  rejectSuggestion: (workspaceId: string, conversationId: string, suggestionId: string): Promise<{ ai_suggestion: AiSuggestion }> =>
-    apiFetch(`/api/workspaces/${workspaceId}/conversations/${conversationId}/suggestions/${suggestionId}/reject`, { method: 'POST', body: JSON.stringify({}) }),
+  listSuggestions: async (workspaceId: string, conversationId: string, params: { page?: number; pageSize?: number } = {}): Promise<{ ai_suggestions: AiSuggestion[]; total: number; page: number; pageSize: number }> => {
+    const raw = await apiFetch(`/api/workspaces/${workspaceId}/conversations/${conversationId}/suggestions${qs(params)}`) as { ai_suggestions?: AiSuggestion[]; items?: AiSuggestion[]; total: number; page: number; pageSize: number };
+    return {
+      ai_suggestions: raw.ai_suggestions ?? raw.items ?? [],
+      total: raw.total ?? 0, page: raw.page ?? 1, pageSize: raw.pageSize ?? 20,
+    };
+  },
+  acceptSuggestion: async (workspaceId: string, conversationId: string, suggestionId: string, payload: { edited_text?: string } = {}): Promise<{ ai_suggestion: AiSuggestion }> => {
+    const raw = await apiFetch(`/api/workspaces/${workspaceId}/conversations/${conversationId}/suggestions/${suggestionId}/accept`, { method: 'POST', body: JSON.stringify(payload) }) as { ai_suggestion?: AiSuggestion; suggestion?: AiSuggestion };
+    return { ai_suggestion: raw.ai_suggestion ?? raw.suggestion! };
+  },
+  rejectSuggestion: async (workspaceId: string, conversationId: string, suggestionId: string): Promise<{ ai_suggestion: AiSuggestion }> => {
+    const raw = await apiFetch(`/api/workspaces/${workspaceId}/conversations/${conversationId}/suggestions/${suggestionId}/reject`, { method: 'POST', body: JSON.stringify({}) }) as { ai_suggestion?: AiSuggestion; suggestion?: AiSuggestion };
+    return { ai_suggestion: raw.ai_suggestion ?? raw.suggestion! };
+  },
   handoffConversation: (workspaceId: string, conversationId: string, reason: string): Promise<HandoffResult> =>
     apiFetch(`/api/workspaces/${workspaceId}/conversations/${conversationId}/handoff`, { method: 'POST', body: JSON.stringify({ reason }) }),
   resumeAi: (workspaceId: string, conversationId: string): Promise<{ resumed: boolean }> =>

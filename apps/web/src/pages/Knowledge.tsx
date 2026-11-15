@@ -44,7 +44,7 @@ export default function Knowledge() {
   const listQ = useQuery({
     queryKey: ['knowledge', workspaceId, search, kindFilter, page],
     queryFn: () => api.listKnowledge(workspaceId!, {
-      page, pageSize: 20, q: search || undefined, kind: kindFilter || undefined,
+      page, pageSize: 20, search: search || undefined, kind: kindFilter || undefined,
     }),
     enabled: !!workspaceId,
   });
@@ -130,9 +130,14 @@ export default function Knowledge() {
               {docs.map((doc) => (
                 <tr key={doc.id} className="border-b border-slate-800 hover:bg-slate-800/50">
                   <td className="px-4 py-3">
-                    <span className="flex items-center gap-2 font-medium text-white">
+                    <button
+                      type="button"
+                      onClick={() => setEditing(doc)}
+                      className="flex items-center gap-2 text-left font-medium text-white hover:text-purple-300 hover:underline"
+                      aria-label={`Edit ${doc.title}`}
+                    >
                       <BookOpen className="h-4 w-4 shrink-0 text-primary" /> {doc.title}
-                    </span>
+                    </button>
                     <span className="block max-w-md truncate text-xs text-slate-500">{doc.content}</span>
                   </td>
                   <td className="px-4 py-3 capitalize text-slate-300">{doc.kind}</td>

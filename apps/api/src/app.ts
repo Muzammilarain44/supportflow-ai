@@ -19,6 +19,9 @@ import { automationRouter, aiWorkspaceRouter } from './routes/automation.js';
 import { errorHandler, notFound } from './errors.js';
 import { logger } from './logger.js';
 
+/** Max authenticated requests per user per 15-minute window (see createApp). */
+export const AUTHED_RATE_LIMIT_MAX = 1000;
+
 export function createApp(env: Env): Express {
   const app = express();
   app.use(cors({ origin: env.FRONTEND_URL, credentials: true }));
@@ -30,11 +33,16 @@ export function createApp(env: Env): Express {
   app.use('/api/automation', express.raw({ type: 'application/json', limit: '1mb' }), automationRouter(env));
   app.use(express.json({ limit: '1mb' }));
   app.use((req, _res, next) => { logger.info(`${req.method} ${req.path}`); next(); });
-  app.get('/health', (_req, res) => res.json({ status: 'ok', service: 'supportflow-api', version: '0.3.2' }));
+  app.get('/health', (_req, res) => res.json({ status: 'ok', service: 'supportflow-api', version: '0.3.3' }));
 
-  // Generous limit for the authenticated API: 300 requests / 15 min per user.
-  // Runs AFTER authMiddleware so the limiter key includes the user id.
-  const authedRateLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 300 });
+  // Authenticated-API limit: 1000 requests / 15 min per user (IP + user id).
+  // Raised from 300 on 2026-11-15 (UI E2E): ordinary dashboard use trips
+  // 300 — the Inbox polls messages every 5s (12/min) and every view fires
+  // several queries, so an agent working the Inbox for ~10 min hits the
+  // old cap and gets 429s. 1000 still bounds abuse (sustained >66/min
+  // from one account is cut off) while normal use stays far below it.
+  // The public widget endpoints keep their own strict per-IP limits.
+  const authedRateLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: AUTHED_RATE_LIMIT_MAX });
   const authed = [authMiddleware(env), authedRateLimit, requireWorkspaceMember(env)] as const;
 
   app.use('/api/workspaces', authMiddleware(env), authedRateLimit, workspacesRouter(env));

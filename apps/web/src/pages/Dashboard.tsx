@@ -123,7 +123,8 @@ export default function Dashboard() {
               <p className="text-sm text-slate-400">AI status</p>
               <p className="mt-2 text-xl font-bold text-white">
                 <span>{aiOverviewQ.data.ai_enabled ? 'Enabled' : 'Disabled'}</span>
-                <span className="ml-2 text-sm font-medium capitalize text-slate-400">{aiOverviewQ.data.mode.replace(/_/g, ' ')}</span>
+                {' — '}
+                <span className="text-sm font-medium capitalize text-slate-400">{aiOverviewQ.data.mode.replace(/_/g, ' ')}</span>
               </p>
             </div>
             {[

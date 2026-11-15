@@ -407,3 +407,210 @@ describe('Dashboard AI overview', () => {
     expect(screen.getByText('Failed executions')).toBeInTheDocument();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Live-shape regression (UI E2E 2026-11-15): the live API returns generic
+// `items` / `settings` / `document` keys on the Phase 3 endpoints, while
+// the client was typed for named keys — so the suggestion panel never
+// rendered, the settings page showed defaults, and KB search never
+// filtered. These tests mock the REAL API shapes and assert the UI works.
+// ---------------------------------------------------------------------------
+describe('Phase 3 live-shape regression', () => {
+  it('Inbox shows the pending suggestion when the API returns {items}', async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes('/suggestions')) {
+        return okJson({
+          items: [{
+            id: 's1', workspace_id: 'ws-1', conversation_id: 'c1', message_id: 'm1',
+            suggestion: 'If your order was placed on a Tuesday, you get a violet umbrella.',
+            sources: [{ title: 'Tuesday Refund Policy — Violet Umbrella' }],
+            status: 'pending', reviewed_by: null,
+            created_at: '2026-11-14T10:06:00.000Z', updated_at: '2026-11-14T10:06:00.000Z',
+          }],
+          total: 1, page: 1, pageSize: 20,
+        });
+      }
+      if (url.includes('/ai-executions')) return okJson({ items: [], total: 0, page: 1, pageSize: 20 });
+      if (url.includes('/messages')) {
+        return okJson({
+          messages: [{
+            id: 'm1', workspace_id: 'ws-1', conversation_id: 'c1', customer_id: 'cust-1',
+            sender_type: 'customer', sender_id: null, body: 'Hi, can you confirm your refund policy?',
+            client_message_id: null, created_at: '2026-11-14T10:05:00.000Z', read_at: null,
+          }],
+          total: 1, page: 1, pageSize: 100,
+        });
+      }
+      if (url.includes('/read')) return okJson({ read_count: 0 });
+      if (url.includes('/notes')) return okJson({ notes: [], total: 0, page: 1, pageSize: 20 });
+      if (url.includes('/tickets')) return okJson({ tickets: [], total: 0, page: 1, pageSize: 100 });
+      if (url.includes('/members')) return okJson({ members: [] });
+      if (url.includes('/conversations/c1')) {
+        return okJson({
+          conversation: {
+            id: 'c1', workspace_id: 'ws-1', customer_id: 'cust-1', status: 'open', priority: 'medium',
+            assigned_to: null, tags: [], ai_paused: false, handoff_reason: null, handed_off_at: null,
+            created_at: '2026-11-14T10:00:00.000Z', updated_at: '2026-11-14T10:00:00.000Z', last_message_at: '2026-11-14T10:05:00.000Z',
+          },
+          customer: { id: 'cust-1', full_name: 'Alice Example', email: 'alice@example.com', phone: null, tags: [] },
+          assigned_member: null,
+        });
+      }
+      if (url.includes('/conversations')) {
+        return okJson({
+          conversations: [{
+            id: 'c1', workspace_id: 'ws-1', customer_id: 'cust-1', status: 'open', priority: 'high',
+            assigned_to: null, tags: [], created_at: '2026-11-14T10:00:00.000Z', updated_at: '2026-11-14T10:00:00.000Z',
+            last_message_at: '2026-11-14T10:05:00.000Z',
+            customer: { id: 'cust-1', full_name: 'Alice Example', email: 'alice@example.com' },
+            last_message: { body: 'Hi, can you confirm your refund policy?', created_at: '2026-11-14T10:05:00.000Z' },
+            unread_count: 0,
+          }],
+          total: 1, page: 1, pageSize: 20,
+        });
+      }
+      return okJson({});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    withProviders(
+      <Routes><Route path="/inbox/:conversationId" element={<Inbox />} /></Routes>,
+      '/inbox/c1',
+    );
+    expect(await screen.findByText('AI suggestion')).toBeInTheDocument();
+    expect(screen.getByText('If your order was placed on a Tuesday, you get a violet umbrella.')).toBeInTheDocument();
+    expect(screen.getByText(/Sources: Tuesday Refund Policy — Violet Umbrella/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Accept' })).toBeInTheDocument();
+  });
+
+  it('AI settings shows the real enabled state when the API returns {settings}', async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes('/ai-settings')) {
+        return okJson({
+          settings: {
+            id: 'ai-1', workspace_id: 'ws-1', enabled: true, mode: 'suggestion',
+            provider_order: ['groq', 'gemini'], auto_reply_require_grounding: true,
+            escalation_on_low_confidence: true,
+            created_at: '2026-11-14T10:00:00.000Z', updated_at: '2026-11-14T10:00:00.000Z',
+          },
+        });
+      }
+      if (url.includes('/members')) {
+        return okJson({
+          members: [{ id: 'm1', workspace_id: 'ws-1', user_id: 'u1', role: 'owner', display_name: 'Owner', avatar_url: null, initials: 'O', member_since: '2026-01-01', created_at: '2026-01-01', updated_at: '2026-01-01' }],
+        });
+      }
+      return okJson({});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    withProviders(<AISettings />);
+    await screen.findByText('AI assistance');
+    const checkbox = screen.getByLabelText('AI enabled') as HTMLInputElement;
+    expect(checkbox.checked).toBe(true);
+    expect(screen.getByText(/Provider order: Groq → Gemini/)).toBeInTheDocument();
+  });
+
+  it('KB search sends search= (not q=) so the API actually filters', async () => {
+    const calls: string[] = [];
+    const fetchMock = vi.fn(async (url: string) => {
+      calls.push(url);
+      if (url.includes('/knowledge')) {
+        return okJson({
+          items: [{
+            id: 'k1', workspace_id: 'ws-1', title: 'Refund policy', content: 'Refunds within 30 days.',
+            kind: 'article', enabled: true, archived: false, created_by: 'u1',
+            created_at: '2026-11-14T10:00:00.000Z', updated_at: '2026-11-14T10:00:00.000Z',
+            latest_job_status: 'completed',
+          }],
+          total: 1, page: 1, pageSize: 20,
+        });
+      }
+      return okJson({});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    withProviders(<Knowledge />);
+    await screen.findByText('Refund policy');
+    fireEvent.change(screen.getByLabelText('Search knowledge documents'), { target: { value: 'zzzzqq' } });
+    await waitFor(() => expect(calls.some((u) => u.includes('search=zzzzqq'))).toBe(true));
+    expect(calls.some((u) => u.includes('q=zzzzqq'))).toBe(false);
+  });
+
+  it('KB title click opens the edit modal', async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes('/knowledge')) {
+        return okJson({
+          items: [{
+            id: 'k1', workspace_id: 'ws-1', title: 'Refund policy', content: 'Refunds within 30 days.',
+            kind: 'article', enabled: true, archived: false, created_by: 'u1',
+            created_at: '2026-11-14T10:00:00.000Z', updated_at: '2026-11-14T10:00:00.000Z',
+            latest_job_status: 'completed',
+          }],
+          total: 1, page: 1, pageSize: 20,
+        });
+      }
+      return okJson({});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    withProviders(<Knowledge />);
+    await screen.findByText('Refund policy');
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Refund policy' }));
+    expect(await screen.findByText('Edit document')).toBeInTheDocument();
+  });
+
+  it('Automations offers processed (not completed) and shows failed executions from {items}', async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes('/ai-overview')) {
+        return okJson({
+          ai_enabled: true, mode: 'auto',
+          automation: { pending: 2, processing: 1, failed: 3, dead: 0, last_processed_at: '2026-11-14T10:00:00.000Z' },
+          totals: { assisted_conversations: 4, suggestions: 5, auto_replies: 6, handoffs: 1, failed_executions: 2 },
+        });
+      }
+      if (url.includes('/automation-events')) return okJson({ automation_events: [], total: 0, page: 1, pageSize: 20 });
+      if (url.includes('/ai-executions')) {
+        return okJson({
+          items: [{
+            id: 'ex-1', workspace_id: 'ws-1', conversation_id: 'c1', message_id: 'm1', event_id: null,
+            provider: 'groq', model: 'openai/gpt-oss-20b', mode: 'auto', status: 'failed',
+            prompt_tokens: 100, completion_tokens: 0, latency_ms: 2500, error: 'Provider timeout', suggestion: null,
+            created_at: '2026-11-14T10:00:00.000Z',
+          }],
+          total: 1, page: 1, pageSize: 50,
+        });
+      }
+      return okJson({});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    withProviders(<Automations />);
+    expect(await screen.findByText('Automation Activity')).toBeInTheDocument();
+    const select = screen.getByLabelText('Filter events by status') as HTMLSelectElement;
+    const options = Array.from(select.options).map((o) => o.value);
+    expect(options).toContain('processed');
+    expect(options).not.toContain('completed');
+    expect(await screen.findByText('Provider timeout')).toBeInTheDocument();
+    expect(await screen.findByText('groq · openai/gpt-oss-20b')).toBeInTheDocument();
+  });
+
+  it('Dashboard AI status reads as one separated phrase', async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes('/ai-overview')) {
+        return okJson({
+          ai_enabled: true, mode: 'suggestion',
+          automation: { pending: 0, processing: 0, failed: 0, dead: 0, last_processed_at: null },
+          totals: { assisted_conversations: 0, suggestions: 0, auto_replies: 0, handoffs: 0, failed_executions: 0 },
+        });
+      }
+      if (url.includes('/tickets/stats')) {
+        return okJson({ by_status: { open: 0, in_progress: 0, waiting_for_customer: 0, resolved: 0, closed: 0 }, by_priority: { low: 0, medium: 0, high: 0, urgent: 0 }, total: 0 });
+      }
+      if (url.includes('/customers')) return okJson({ customers: [], total: 0, page: 1, pageSize: 1 });
+      if (url.includes('/conversations')) return okJson({ conversations: [], total: 0, page: 1, pageSize: 1 });
+      if (url.includes('/tickets')) return okJson({ tickets: [], total: 0, page: 1, pageSize: 5 });
+      return okJson({});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { container } = withProviders(<Dashboard />);
+    expect(await screen.findByText('AI & Automation')).toBeInTheDocument();
+    await waitFor(() => expect(container.textContent).toContain('Enabled — suggestion'));
+    expect(container.textContent).not.toContain('Enabledsuggestion');
+  });
+});
