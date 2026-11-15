@@ -5,6 +5,7 @@ import { authMiddleware } from './middleware/auth.js';
 import { rateLimit } from './middleware/rateLimit.js';
 import { requireWorkspaceMember } from './middleware/workspaceAuth.js';
 import { workspacesRouter } from './routes/workspaces.js';
+import { profilesRouter } from './routes/profiles.js';
 import { customersRouter } from './routes/customers.js';
 import { conversationsRouter } from './routes/conversations.js';
 import { ticketsRouter } from './routes/tickets.js';
@@ -18,7 +19,7 @@ export function createApp(env: Env): Express {
   app.use(cors({ origin: env.FRONTEND_URL, credentials: true }));
   app.use(express.json({ limit: '1mb' }));
   app.use((req, _res, next) => { logger.info(`${req.method} ${req.path}`); next(); });
-  app.get('/health', (_req, res) => res.json({ status: 'ok', service: 'supportflow-api', version: '0.2.0' }));
+  app.get('/health', (_req, res) => res.json({ status: 'ok', service: 'supportflow-api', version: '0.2.1' }));
 
   // Generous limit for the authenticated API: 300 requests / 15 min per user.
   // Runs AFTER authMiddleware so the limiter key includes the user id.
@@ -26,6 +27,8 @@ export function createApp(env: Env): Express {
   const authed = [authMiddleware(env), authedRateLimit, requireWorkspaceMember(env)] as const;
 
   app.use('/api/workspaces', authMiddleware(env), authedRateLimit, workspacesRouter(env));
+  // Own profile (Phase 2.1, Issue 2) — auth only, NOT workspace-scoped.
+  app.use('/api/profile', authMiddleware(env), authedRateLimit, profilesRouter(env));
   // Workspace-scoped Phase 2 routers (membership enforced by requireWorkspaceMember,
   // which reads :workspaceId — see middleware/workspaceAuth.ts).
   app.use('/api/workspaces/:workspaceId/customers', ...authed, customersRouter(env));
@@ -35,7 +38,14 @@ export function createApp(env: Env): Express {
 
   // Public widget router — no auth; each endpoint has its own strict
   // per-IP rate limit (see routes/widget.ts).
-  app.use('/api/widget', widgetRouter(env));
+  // Widget CORS reflects ONLY the app's own frontend origin (the iframe's
+  // origin) and never credentials: the iframe is served from the same app
+  // as the dashboard. It deliberately does NOT reflect embedding sites'
+  // origins — CORS preflight cannot know the widget key, so embedding
+  // policy is enforced separately via the parent_origin parameter (see
+  // docs/phase2-1-origins.md). No wildcard CORS anywhere on widget routes.
+  const widgetCors = cors({ origin: env.FRONTEND_URL, credentials: false });
+  app.use('/api/widget', widgetCors, widgetRouter(env));
 
   app.use(notFound);
   app.use(errorHandler);

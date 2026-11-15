@@ -47,6 +47,14 @@ export interface Workspace {
 export interface WorkspaceMember {
   id: string; workspace_id: string; user_id: string; role: WorkspaceRole; created_at: string; updated_at: string;
 }
+// Phase 2.1 (Issue 2): profile display info for a workspace member.
+export interface Profile {
+  id: string; display_name: string | null; avatar_url: string | null;
+  created_at: string; updated_at: string;
+}
+export interface MemberWithProfile extends WorkspaceMember {
+  display_name: string; avatar_url: string | null; initials: string; member_since: string;
+}
 export type Priority = 'low' | 'medium' | 'high' | 'urgent';
 export type ConversationStatus = 'open' | 'pending' | 'resolved' | 'closed';
 export type TicketStatus = 'open' | 'in_progress' | 'waiting_for_customer' | 'resolved' | 'closed';
@@ -110,6 +118,12 @@ export const api = {
   getWorkspace: (id: string): Promise<{ workspace: Workspace }> => apiFetch(`/api/workspaces/${id}`),
   listMembers: (workspaceId: string): Promise<{ members: WorkspaceMember[] }> =>
     apiFetch(`/api/workspaces/${workspaceId}/members`),
+  // Phase 2.1 (Issue 2): same endpoint, typed with profile display info.
+  listMembersWithProfiles: (workspaceId: string): Promise<{ members: MemberWithProfile[] }> =>
+    apiFetch(`/api/workspaces/${workspaceId}/members`),
+  getMyProfile: (): Promise<{ profile: Profile }> => apiFetch('/api/profile/me'),
+  updateMyProfile: (payload: { display_name?: string | null; avatar_url?: string | null }): Promise<{ profile: Profile }> =>
+    apiFetch('/api/profile/me', { method: 'PATCH', body: JSON.stringify(payload) }),
 
   // Customers
   listCustomers: (workspaceId: string, params: ListParams = {}): Promise<{ customers: Customer[]; total: number; page: number; pageSize: number }> =>
@@ -172,13 +186,17 @@ export const api = {
   updateWidgetSettings: (workspaceId: string, payload: Partial<{ business_name: string; welcome_message: string; primary_color: string; enabled: boolean; allowed_origins: string[] }>): Promise<{ widget_settings: WidgetSettings }> =>
     apiFetch(`/api/workspaces/${workspaceId}/widget-settings`, { method: 'PATCH', body: JSON.stringify(payload) }),
 
-  // Public widget (no auth)
-  getWidgetConfig: (key: string): Promise<WidgetConfig> =>
-    widgetFetch(`/api/widget/config?key=${encodeURIComponent(key)}`),
-  createWidgetSession: (payload: { key: string; name?: string; email?: string }): Promise<{ token: string; conversation_id: string; customer_id: string; expires_at: string }> =>
+  // Public widget (no auth). Every call carries parent_origin — the origin
+  // of the page embedding the iframe, read from document.referrer (see
+  // WidgetEmbed.getParentOrigin). The API validates it against the
+  // widget's allow-list; an omitted origin is rejected unless the
+  // migration-0008 policy RPCs are not deployed yet (legacy fallback).
+  getWidgetConfig: (key: string, parentOrigin?: string): Promise<WidgetConfig> =>
+    widgetFetch(`/api/widget/config?key=${encodeURIComponent(key)}${parentOrigin ? `&parent_origin=${encodeURIComponent(parentOrigin)}` : ''}`),
+  createWidgetSession: (payload: { key: string; name?: string; email?: string; parent_origin?: string }): Promise<{ token: string; conversation_id: string; customer_id: string; expires_at: string }> =>
     widgetFetch('/api/widget/sessions', { method: 'POST', body: JSON.stringify(payload) }),
-  sendWidgetMessage: (payload: { token: string; body: string; client_message_id?: string }): Promise<{ message_id: string }> =>
+  sendWidgetMessage: (payload: { token: string; body: string; client_message_id?: string; parent_origin?: string }): Promise<{ message_id: string }> =>
     widgetFetch('/api/widget/messages', { method: 'POST', body: JSON.stringify(payload) }),
-  getWidgetHistory: (token: string): Promise<{ messages: Array<{ id: string; sender_type: string; body: string; created_at: string }> }> =>
-    widgetFetch(`/api/widget/history?token=${encodeURIComponent(token)}`),
+  getWidgetHistory: (token: string, parentOrigin?: string): Promise<{ messages: Array<{ id: string; sender_type: string; body: string; created_at: string }> }> =>
+    widgetFetch(`/api/widget/history?token=${encodeURIComponent(token)}${parentOrigin ? `&parent_origin=${encodeURIComponent(parentOrigin)}` : ''}`),
 };

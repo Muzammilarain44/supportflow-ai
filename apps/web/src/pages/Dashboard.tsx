@@ -3,7 +3,7 @@ import { Bot, Inbox, Link as LinkIcon, Plus, Ticket } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { api } from '../lib/api';
 import { useWorkspace } from '../context/WorkspaceContext';
-import { EmptyState, NoWorkspaceState, Skeleton } from '../components/ui';
+import { EmptyState, NoWorkspaceState, Skeleton, WorkspaceErrorState } from '../components/ui';
 
 function timeAgo(iso: string | null | undefined): string {
   if (!iso) return '';
@@ -16,7 +16,7 @@ function timeAgo(iso: string | null | undefined): string {
 }
 
 export default function Dashboard() {
-  const { workspaceId, workspace, loading: wsLoading } = useWorkspace();
+  const { workspaceId, workspace, loading: wsLoading, status: wsStatus, error: wsError, refetchWorkspaces } = useWorkspace();
   const enabled = !!workspaceId;
   const statsQ = useQuery({
     queryKey: ['ticket-stats', workspaceId],
@@ -74,7 +74,8 @@ export default function Dashboard() {
         </Link>
       </div>
 
-      {!workspaceId && !wsLoading && <NoWorkspaceState />}
+      {wsStatus === 'error' && <WorkspaceErrorState message={wsError?.message} onRetry={refetchWorkspaces} />}
+      {wsStatus === 'empty' && <NoWorkspaceState />}
 
       {error && (
         <div className="rounded-xl border border-danger/50 bg-danger/10 p-4 text-sm text-red-300" role="alert">

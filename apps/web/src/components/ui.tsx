@@ -190,6 +190,52 @@ export function NoWorkspaceState() {
   );
 }
 
+/**
+ * Professional loading skeleton shown while the workspace list is still
+ * being fetched (Phase 2.1, Issue 1). Pages must render this — never the
+ * empty state — while the workspace request is pending.
+ */
+export function WorkspaceLoadingSkeleton() {
+  return (
+    <div className="space-y-4" role="status" aria-label="Loading workspace">
+      <Skeleton className="h-8 w-56" />
+      <Skeleton className="h-4 w-96 max-w-full" />
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        {[0, 1, 2, 3].map((i) => (
+          <Skeleton key={i} className="h-28" />
+        ))}
+      </div>
+      <Skeleton className="h-64" />
+    </div>
+  );
+}
+
+/**
+ * Shown when the workspace list request itself failed (Phase 2.1, Issue 1).
+ * An API error must never be presented as "No workspace yet".
+ */
+export function WorkspaceErrorState({
+  message,
+  onRetry,
+}: {
+  message?: string | null;
+  onRetry?: () => void;
+}) {
+  return (
+    <div className="rounded-xl border border-danger/50 bg-danger/10 p-6 text-center" role="alert">
+      <h2 className="text-lg font-semibold text-white">Couldn&apos;t load your workspace</h2>
+      <p className="mx-auto mt-2 max-w-md text-sm text-slate-300">
+        {message ? `The workspace request failed: ${message}` : 'The workspace request failed. Check your connection and try again.'}
+      </p>
+      {onRetry && (
+        <button onClick={onRetry} className="mt-4 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-white hover:bg-purple-600">
+          Try again
+        </button>
+      )}
+    </div>
+  );
+}
+
 export const inputCls =
   'w-full rounded-lg border border-slate-600 bg-navy px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:border-primary focus:outline-none';
 export const selectCls =

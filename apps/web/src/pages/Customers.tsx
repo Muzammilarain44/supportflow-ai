@@ -6,8 +6,8 @@ import { api, type Customer } from '../lib/api';
 import { useWorkspace } from '../context/WorkspaceContext';
 import { useToast } from '../components/Toast';
 import {
-  EmptyState, Modal, NoWorkspaceState, Pagination, Skeleton,
-  btnPrimary, btnSecondary, inputCls,
+  EmptyState, Modal, NoWorkspaceState, Pagination, Skeleton, WorkspaceErrorState,
+  WorkspaceLoadingSkeleton, btnPrimary, btnSecondary, inputCls,
 } from '../components/ui';
 
 function formatTime(iso: string): string {
@@ -19,7 +19,7 @@ function parseTags(value: string): string[] {
 }
 
 export default function Customers() {
-  const { workspaceId } = useWorkspace();
+  const { workspaceId, status: wsStatus, error: wsError, refetchWorkspaces } = useWorkspace();
   const toast = useToast();
   const queryClient = useQueryClient();
   const [search, setSearch] = useState('');
@@ -35,7 +35,9 @@ export default function Customers() {
   const customers = listQ.data?.customers ?? [];
   const total = listQ.data?.total ?? 0;
 
-  if (!workspaceId) return <NoWorkspaceState />;
+if (wsStatus === 'auth-loading' || wsStatus === 'loading') return <WorkspaceLoadingSkeleton />;
+if (wsStatus === 'error') return <WorkspaceErrorState message={wsError?.message} onRetry={refetchWorkspaces} />;
+if (wsStatus === 'empty' || !workspaceId) return <NoWorkspaceState />;
 
   return (
     <div className="space-y-4">
@@ -81,7 +83,7 @@ export default function Customers() {
                       {(c.tags ?? []).map((t) => <span key={t} className="rounded-full bg-slate-700 px-2 py-0.5 text-xs text-slate-300">{t}</span>)}
                     </span>
                   </td>
-                  <td className="px-4 py-3 text-slate-400">{c.last_activity_at ? formatTime(c.last_activity_at) : '—'}</td>
+                  <td className="px-4 py-3 text-slate-400">{c.last_activity_at ? formatTime(c.last_activity_at) : 'No activity yet'}</td>
                   <td className="px-4 py-3">
                     <button onClick={() => setModal({ mode: 'edit', customer: c })} className="text-sm text-purple-300 hover:underline">Edit</button>
                   </td>
@@ -180,7 +182,7 @@ function CustomerModal({ open, initial, onClose, onSaved }: {
 }
 
 export function CustomerDetailPage() {
-  const { workspaceId } = useWorkspace();
+  const { workspaceId, status: wsStatus, error: wsError, refetchWorkspaces } = useWorkspace();
   const { customerId } = useParams<{ customerId: string }>();
   const toast = useToast();
   const queryClient = useQueryClient();
@@ -215,7 +217,9 @@ export function CustomerDetailPage() {
     onError: (err) => toast.error(`Could not save notes: ${(err as Error).message}`),
   });
 
-  if (!workspaceId) return <NoWorkspaceState />;
+if (wsStatus === 'auth-loading' || wsStatus === 'loading') return <WorkspaceLoadingSkeleton />;
+if (wsStatus === 'error') return <WorkspaceErrorState message={wsError?.message} onRetry={refetchWorkspaces} />;
+if (wsStatus === 'empty' || !workspaceId) return <NoWorkspaceState />;
   if (detailQ.isLoading) return <div className="space-y-2"><Skeleton className="h-10" /><Skeleton className="h-64" /></div>;
   if (detailQ.isError || !detailQ.data) {
     return <div className="rounded-xl border border-danger/50 bg-danger/10 p-4 text-sm text-red-300" role="alert">Could not load this customer: {(detailQ.error as Error | undefined)?.message ?? 'Not found'}</div>;

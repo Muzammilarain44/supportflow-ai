@@ -324,3 +324,51 @@ export interface PaginatedResponse<T> {
   page: number;
   pageSize: number;
 }
+
+// ============================================================================
+// Phase 2.1 — profiles (Issue 2: real member names instead of UUIDs)
+// ============================================================================
+
+/** One profile row per auth user. Never carries an email address. */
+export interface Profile {
+  id: string;
+  display_name: string | null;
+  avatar_url: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** A workspace member enriched with profile display info (server-side). */
+export interface MemberWithProfile extends WorkspaceMember {
+  /** Display name, or 'Unnamed member' when the user has no profile/name. */
+  display_name: string;
+  avatar_url: string | null;
+  /** Server-computed initials from display_name ('?' when unnamed). */
+  initials: string;
+  /** Alias of the member row's created_at. */
+  member_since: string;
+}
+
+/** Initials from a display name: first letters of the first two words. */
+export function profileInitials(displayName: string | null | undefined): string {
+  const parts = (displayName ?? '').trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return '?';
+  return parts.slice(0, 2).map((p) => p[0]!.toUpperCase()).join('');
+}
+
+/** The name the UI shows when a user has no profile display name. */
+export const UNNAMED_MEMBER = 'Unnamed member';
+
+export const updateProfileSchema = z
+  .object({
+    display_name: z.string().trim().max(100, 'Display name must be at most 100 characters').nullable().optional(),
+    avatar_url: z
+      .string()
+      .trim()
+      .max(500, 'Avatar URL must be at most 500 characters')
+      .refine((v) => v === '' || /^https:\/\//.test(v), 'avatar_url must be an https URL')
+      .nullable()
+      .optional(),
+  })
+  .strict();
+export type UpdateProfileInput = z.infer<typeof updateProfileSchema>;

@@ -32,11 +32,20 @@ Supabase JWT in `Authorization: Bearer <token>`.
 
 | Method | Path | Auth | Notes |
 | --- | --- | --- | --- |
-| GET | `/health` | — | `{status, service, version}` — version is now `0.2.0` |
+| GET | `/health` | — | `{status, service, version}` — version is now `0.2.1` (Phase 2.1) |
 | GET | `/api/workspaces` | Bearer | Workspaces the user belongs to |
 | POST | `/api/workspaces` | Bearer | Create via `create_workspace_with_owner` RPC |
 | GET | `/api/workspaces/:id` | Bearer + member | One workspace |
-| GET | `/api/workspaces/:id/members` | Bearer + member | Members (used for assignment pickers) |
+| GET | `/api/workspaces/:id/members` | Bearer + member | Members with profile display info (Phase 2.1): `display_name` (or `"Unnamed member"`), `avatar_url`, `initials`, `member_since`, role. No emails. Used for assignment pickers |
+
+### Profiles — `/api/profile` (Phase 2.1, Issue 2)
+
+| Method | Path | Auth | Notes |
+| --- | --- | --- | --- |
+| GET | `/me` | Bearer | Own profile; lazily created on first read (display name derived from JWT `user_metadata` `full_name`/`name` when present, else `null` → UI shows "Unnamed member") |
+| PATCH | `/me` | Bearer | Self only — the route has no target id, so one user can never edit another's profile. Only `display_name` (trim, max 100, empty → `null`) and `avatar_url` (https-only or empty, max 500). An injected `id` field is rejected (400) |
+
+Profile visibility is workspace-scoped by RLS (migration 0006): a profile is readable only by its owner or by users who share a workspace with that member (`shares_workspace_with()` helper). See `docs/phase2-1-profiles.md`.
 
 ### Customers — `/api/workspaces/:workspaceId/customers`
 
@@ -45,7 +54,7 @@ Supabase JWT in `Authorization: Bearer <token>`.
 | GET | `/` | Bearer + member | List, server-side pagination. `?search=` matches name/email, `?tag=` filters by tag. Returns `{customers, total, page, pageSize}` |
 | POST | `/` | Bearer + member | Create. Duplicate email in the workspace → **409** `A customer with this email already exists in this workspace` (Postgres 23505) |
 | GET | `/:customerId` | Bearer + member | Customer + `{tickets: {total}, conversations: {total}, recent_conversations: [...]}` (last 5) |
-| PATCH | `/:customerId` | Bearer + member | Update name/email/phone/tags/notes. Does **not** bump `last_activity_at` (only message/ticket activity does) |
+| PATCH | `/:customerId` | Bearer + member | Update name/email/phone/tags/notes. Does **not** bump `last_activity_at` — only message inserts do (DB trigger, migration 0007) |
 
 ### Conversations — `/api/workspaces/:workspaceId/conversations`
 
@@ -77,10 +86,10 @@ Supabase JWT in `Authorization: Bearer <token>`.
 
 | Method | Path | Auth | Notes |
 | --- | --- | --- | --- |
-| GET | `/config?key=<public_key>` | — | `{business_name, welcome_message, primary_color, enabled}` via RPC `get_widget_config`. Unknown key or disabled widget → **404** `Widget not found` |
-| POST | `/sessions` | — | `{key, name?, email?}` via RPC `create_widget_visitor_session`. Returns `{token, conversation_id, customer_id, expires_at}`. The raw token is returned **once** here and is never logged or stored by the API |
-| POST | `/messages` | — | `{token, body, client_message_id?}` via RPC `post_widget_visitor_message`. Body 1–5000 chars (Zod). **Idempotent on `client_message_id` (migration 0005):** a repeat with the same key in the same conversation returns the existing message with **200** (no second row, no second outbox event); a new message returns **201** with `{message_id}`. Invalid/expired token → **401**. The RPC also records the `customer.message.created` outbox event — the API does not double-record it |
-| GET | `/history?token=...` | — | `{messages}` via RPC `get_widget_visitor_history`, oldest first, only the caller's own session. Unknown/expired token → `{messages: []}` with **200** (per RPC design) |
+| GET | `/config?key=<public_key>` | — | `{business_name, welcome_message, primary_color, enabled}` via RPC `get_widget_config`. Unknown key or disabled widget → **404** `Widget not found`. Phase 2.1: accepts `?parent_origin=`; if the widget's allow-list is non-empty the claimed parent origin must match it, and an empty allow-list allows only the app's own frontend origin — otherwise **403** `Embedding origin not allowed` (see `docs/phase2-1-origins.md`) |
+| POST | `/sessions` | — | `{key, name?, email?, parent_origin?}` via RPC `create_widget_visitor_session` (4-arg since migration 0008). Returns `{token, conversation_id, customer_id, expires_at}`. The raw token is returned **once** here and is never logged or stored by the API. The validated parent origin is stored on the session; unapproved origin → **403** |
+| POST | `/messages` | — | `{token, body, client_message_id?, parent_origin?}` via RPC `post_widget_visitor_message`. Body 1–5000 chars (Zod). **Idempotent on `client_message_id` (migration 0005):** a repeat with the same key in the same conversation returns the existing message with **200** (no second row, no second outbox event); a new message returns **201** with `{message_id}`. Invalid/expired token → **401**. The claimed parent origin must equal the session's stored origin (or pass the allow-list check for legacy sessions) — otherwise **403**. The RPC also records the `customer.message.created` outbox event — the API does not double-record it |
+| GET | `/history?token=...` | — | `{messages}` via RPC `get_widget_visitor_history`, oldest first, only the caller's own session. Unknown/expired token → `{messages: []}` with **200** (per RPC design). Phase 2.1: same parent-origin binding as `/messages` (`?parent_origin=`) |
 
 Widget responses never include internal fields: no `workspace_id`, no
 other visitors' emails, and no token except the one just created.
@@ -162,22 +171,23 @@ this step sends an HTTP request to n8n or any other external service.
 
 ## Known limitations
 
-- **`allowed_origins` is stored but not enforced server-side yet.**
-  `widget_settings.allowed_origins` exists in the schema, but the
-  public config RPC (`get_widget_config`) does not return it, and
-  `widget_settings` has no public SELECT policy, so the API cannot read
-  it as the anon client and must not invent a bypass. Origin
-  enforcement is deferred to **Phase 3** (embed docs should treat the
-  list as best-effort until then). The widget is still safe without it:
-  the public key alone grants no data access — visitor data is only
-  reachable through the token-validated SECURITY DEFINER RPCs.
+- **Widget `allowed_origins` is enforced server-side since Phase 2.1**
+  (migrations 0008, API 0.2.1): the widget API validates the claimed
+  embedding parent origin against the widget's allow-list on config,
+  session creation, message submission and history, and binds sessions
+  to their validated origin. Empty allow-list = only the app's own
+  frontend origin (widget-demo previews). Full design, including the
+  honest limits (no `postMessage` handshake, no per-widget dynamic
+  `frame-ancestors` on static hosting, non-browser spoofing possible),
+  is in `docs/phase2-1-origins.md`. Live iframe behaviour on approved
+  vs unapproved domains is NOT TESTED yet — the parent verifies it live
+  after applying 0008.
 - **Rate limits are in-memory** (see above): per-process, reset on
   restart, not shared across instances.
-- **True two-user isolation is still unproven live** (carried over
-  from Phase 1): cross-workspace isolation is enforced by RLS + the
-  workspace-consistency triggers + API-level checks, and is covered by
-  mocked tests (403 for non-members), but has not yet been exercised by
-  two real users against live Supabase on these Phase 2 tables.
+- **True two-user isolation PASSED live on 2026-11-14** (Phase 2
+  verification): a second user got 403 on all of the first user's
+  workspace/customer/ticket/messages, and workspace-scoped email
+  uniqueness was confirmed. The mocked tests cover the same 403s.
 - **No service-role key**: the API cannot do anything RLS forbids for
   the calling user. Phase 3 workers that poll the outbox will need
   their own service-role access; that is out of scope here.

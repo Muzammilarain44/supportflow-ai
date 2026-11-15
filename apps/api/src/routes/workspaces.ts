@@ -6,6 +6,7 @@ import { getUserSupabase } from '../lib/supabase.js';
 import { validateBody } from '../middleware/validate.js';
 import { requireWorkspaceMember } from '../middleware/workspaceAuth.js';
 import type { AuthedRequest } from '../middleware/auth.js';
+import { enrichMembersWithProfiles } from './profiles.js';
 
 export function workspacesRouter(env: Env) {
   const router = Router();
@@ -52,7 +53,17 @@ export function workspacesRouter(env: Env) {
       const supabase = getUserSupabase(env, req.token!);
       const { data, error } = await supabase.from('workspace_members').select('id,workspace_id,user_id,role,created_at').eq('workspace_id', req.params.id);
       if (error) throw new ApiError(500, 'Failed to list members');
-      return res.json({ members: data ?? [] });
+      const members = (data ?? []) as Array<{ id: string; workspace_id: string; user_id: string; role: string; created_at: string }>;
+      // Enrich with profile display info (Phase 2.1, Issue 2). Only members
+      // of this workspace are ever returned (middleware enforces membership);
+      // profiles carry no email, and RLS additionally limits profile reads
+      // to users who share a workspace.
+      const userIds = members.map((m) => m.user_id);
+      const { data: profiles, error: profilesError } = userIds.length > 0
+        ? await supabase.from('profiles').select('id,display_name,avatar_url').in('id', userIds)
+        : { data: [] as Array<{ id: string; display_name: string | null; avatar_url: string | null }>, error: null };
+      if (profilesError) throw new ApiError(500, 'Failed to list members');
+      return res.json({ members: enrichMembersWithProfiles(members, (profiles ?? []) as Array<{ id: string; display_name: string | null; avatar_url: string | null }>) });
     } catch (e) { return next(e); }
   });
 

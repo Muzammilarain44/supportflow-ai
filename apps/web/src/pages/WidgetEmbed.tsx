@@ -13,6 +13,24 @@ function tokenKey(key: string) {
   return `supportflow.widget.${key}`;
 }
 
+/**
+ * The origin of the page embedding this iframe, derived from
+ * document.referrer. Returns undefined when there is no referrer (direct
+ * navigation, or a referrer-policy that strips it) or when it is not a
+ * parsable URL. This is a client-asserted hint, not proof: the server
+ * validates it against the widget's allow-list, and a non-browser client
+ * can claim any origin — see docs/phase2-1-origins.md. Exported for
+ * unit tests.
+ */
+export function getParentOrigin(referrer: string): string | undefined {
+  if (!referrer) return undefined;
+  try {
+    return new URL(referrer).origin;
+  } catch {
+    return undefined;
+  }
+}
+
 export default function WidgetEmbed() {
   const [key] = useState(() => new URLSearchParams(window.location.search).get('key') ?? '');
   const [config, setConfig] = useState<{ business_name: string; welcome_message: string; primary_color: string; enabled: boolean } | null>(null);
@@ -26,6 +44,11 @@ export default function WidgetEmbed() {
     }
   });
   const [messages, setMessages] = useState<WidgetMessage[]>([]);
+  // Embedding page origin, captured once from document.referrer (see
+  // getParentOrigin). Sent as parent_origin on every widget API call so
+  // the server can enforce the widget's allow-list. Empty referrer ->
+  // undefined -> the server applies its empty-origin default.
+  const [parentOrigin] = useState<string | undefined>(() => getParentOrigin(document.referrer));
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [draft, setDraft] = useState('');
@@ -39,20 +62,20 @@ export default function WidgetEmbed() {
       setConfigError('No widget key provided. Add ?key=<public_key> to the URL.');
       return;
     }
-    api.getWidgetConfig(key)
+    api.getWidgetConfig(key, parentOrigin)
       .then(setConfig)
       .catch((err: Error) => setConfigError(err.message));
-  }, [key]);
+  }, [key, parentOrigin]);
 
   const loadHistory = useCallback(async (t: string) => {
     try {
-      const res = await api.getWidgetHistory(t);
+      const res = await api.getWidgetHistory(t, parentOrigin);
       setMessages(res.messages);
     } catch {
       // Unknown/expired token returns [] with 200 per the API; a network
       // failure here is non-fatal — the next poll retries.
     }
-  }, []);
+  }, [parentOrigin]);
 
   useEffect(() => {
     if (!token) return;
@@ -84,6 +107,7 @@ export default function WidgetEmbed() {
         key,
         name: name.trim() || undefined,
         email: email.trim() || undefined,
+        parent_origin: parentOrigin,
       });
       setToken(res.token);
       try {
@@ -115,7 +139,7 @@ export default function WidgetEmbed() {
     };
     setMessages((m) => [...m, optimistic]);
     try {
-      await api.sendWidgetMessage({ token, body, client_message_id: crypto.randomUUID() });
+      await api.sendWidgetMessage({ token, body, client_message_id: crypto.randomUUID(), parent_origin: parentOrigin });
       await loadHistory(token);
     } catch (err) {
       setError((err as Error).message);

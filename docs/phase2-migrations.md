@@ -39,6 +39,65 @@ transaction inserted. The API returns **200** for a duplicate and **201**
 for a new message. 0003 and 0004 are not edited. Apply 0005 after 0004
 (step 5 below).
 
+## Phase 2.1 — 0006 profiles (Issue 2), 0007 last activity (Issue 3), 0008 widget origins (Issue 4)
+
+All three are additive, idempotent, and do not edit 0001–0005. Apply in
+order after 0005 (steps 6–8 below). None has been applied to live
+Supabase yet — the parent applies them live and verifies.
+
+### 0006 — `public.profiles` (real member names, not UUIDs)
+
+`supabase/migrations/0006_phase2_1_profiles.sql` adds `profiles`
+(`id` UUID PK → `auth.users`, `display_name`, `avatar_url` NULL,
+timestamps, reuses `set_updated_at()`). **No email column by design.**
+RLS uses a new SECURITY DEFINER helper
+`public.shares_workspace_with(uuid)` (same pattern as
+`is_workspace_member`): SELECT is allowed for self or anyone sharing a
+workspace with the caller; INSERT/UPDATE/DELETE are self-only. Profile
+creation is three-layered: (1) PRIMARY — lazy creation in the API
+(`GET /api/profile/me` upserts from the JWT's `user_metadata`
+`full_name`/`name`); (2) idempotent backfill for existing `auth.users`
+rows (`display_name` NULL — names are never invented); (3) safety-net
+trigger on `auth.users` that copies `full_name`/`name` from
+`raw_user_meta_data` and swallows its own errors so signup can never
+fail. See `docs/phase2-1-profiles.md`.
+
+### 0007 — customer `last_activity_at` trigger (Issue 3)
+
+`supabase/migrations/0007_phase2_1_last_activity.sql` adds one
+`AFTER INSERT` trigger on `messages`
+(`bump_customer_last_activity()`, SECURITY DEFINER,
+`set search_path = public`). Both message paths insert into the same
+`messages` table — visitor messages via
+`post_widget_visitor_message()` and agent replies via
+`POST /api/workspaces/:id/conversations/:id/messages` — so one trigger
+covers both. It resolves the owning customer from `NEW.customer_id`
+(fallback: the conversation's `customer_id`) and sets
+`last_activity_at = GREATEST(current, NEW.created_at)`, guarded so an
+older timestamp can never overwrite a newer one. PATCH customer never
+touches the column, so profile edits do not bump activity. Live trigger
+behaviour is NOT TESTED by the mocked API tests (see the `it.skip` in
+`app-phase2-1-activity.test.ts`) — verify live after applying.
+
+### 0008 — widget origin policy (Issue 4)
+
+`supabase/migrations/0008_phase2_1_widget_origins.sql` adds
+`widget_visitor_sessions.parent_origin` (nullable; NULL for sessions
+created before the migration) and two SECURITY DEFINER RPCs:
+`get_widget_origin_policy(p_public_key)` → `(enabled,
+allowed_origins)` and `get_widget_session_policy(p_token)` →
+`(parent_origin, allowed_origins, enabled)` (zero rows for an unknown
+or expired token). It also re-creates
+`create_widget_visitor_session()` as a 4-arg function (old 3-arg
+dropped, 0005 pattern) with identical logic plus an optional
+`p_parent_origin` that is stored on the session. All pgcrypto calls
+are `extensions.`-qualified. The public config response is unchanged:
+`allowed_origins` is never exposed to unauthenticated callers. See
+`docs/phase2-1-origins.md` for the full enforcement design and its
+honest limitations (no `postMessage` handshake, no per-widget dynamic
+`frame-ancestors` on static Vercel hosting, no protection against
+non-browser spoofing beyond tokens + rate limits).
+
 ## How to apply
 
 In Supabase Dashboard > SQL Editor, run the migrations **in order**:
@@ -51,6 +110,13 @@ In Supabase Dashboard > SQL Editor, run the migrations **in order**:
 5. `0005_phase2_widget_message_idempotency.sql` (re-creates
    `post_widget_visitor_message` with `client_message_id` dedupe — see
    the 0005 note above)
+6. `0006_phase2_1_profiles.sql` (Phase 2.1 Issue 2 — `profiles` table,
+   `shares_workspace_with()` helper, RLS, backfill, signup trigger)
+7. `0007_phase2_1_last_activity.sql` (Phase 2.1 Issue 3 — trigger that
+   bumps `customers.last_activity_at` on message insert)
+8. `0008_phase2_1_widget_origins.sql` (Phase 2.1 Issue 4 — session
+   `parent_origin` column + origin-policy RPCs + 4-arg
+   `create_widget_visitor_session`)
 
 The file is idempotent (safe to re-run): `create table if not exists`,
 `create index if not exists`, `drop policy if exists` before every

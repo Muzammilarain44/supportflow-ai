@@ -2,9 +2,24 @@ import { Router, type Response } from 'express';
 import { createWidgetSettingsSchema, updateWidgetSettingsSchema } from '@supportflow/shared';
 import type { Env } from '../env.js';
 import { ApiError } from '../errors.js';
+import { normalizeAllowedOrigins } from '../lib/originPolicy.js';
 import { getUserSupabase } from '../lib/supabase.js';
 import { validateBody } from '../middleware/validate.js';
 import type { AuthedRequest } from '../middleware/auth.js';
+
+/**
+ * Normalise an allow-list for storage, or throw a 400 naming the bad
+ * entry. Origins are stored in canonical scheme://host[:port] form
+ * (lowercased host, no trailing slash, https except http for localhost);
+ * anything else is rejected rather than stored and silently unenforced.
+ */
+function cleanOrigins(value: unknown): string[] {
+  try {
+    return normalizeAllowedOrigins(value);
+  } catch (e) {
+    throw new ApiError(400, (e as Error).message);
+  }
+}
 
 /**
  * Admin widget-settings management (Phase 2 frontend).
@@ -56,7 +71,7 @@ export function widgetSettingsRouter(env: Env) {
             welcome_message: req.body.welcome_message ?? 'Hi! How can we help you today?',
             primary_color: req.body.primary_color ?? '#7C3AED',
             enabled: req.body.enabled ?? true,
-            allowed_origins: req.body.allowed_origins ?? [],
+            allowed_origins: cleanOrigins(req.body.allowed_origins ?? []),
           })
           .select()
           .single();
@@ -76,8 +91,11 @@ export function widgetSettingsRouter(env: Env) {
       try {
         const workspaceId = req.params.workspaceId as string;
         const patch: Record<string, unknown> = {};
-        for (const key of ['business_name', 'welcome_message', 'primary_color', 'enabled', 'allowed_origins'] as const) {
+        for (const key of ['business_name', 'welcome_message', 'primary_color', 'enabled'] as const) {
           if (req.body[key] !== undefined) patch[key] = req.body[key];
+        }
+        if (req.body.allowed_origins !== undefined) {
+          patch.allowed_origins = cleanOrigins(req.body.allowed_origins);
         }
         if (Object.keys(patch).length === 0) {
           throw new ApiError(400, 'No fields to update');

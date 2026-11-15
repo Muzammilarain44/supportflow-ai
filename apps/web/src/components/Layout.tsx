@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { BarChart3, ChevronLeft, ChevronRight, Inbox, BookOpen, LayoutDashboard, LogOut, MessageSquare, Settings, Ticket, Users, Workflow, Zap } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { Skeleton } from './ui';
 import { useWorkspace } from '../context/WorkspaceContext';
 
 const nav = [
@@ -20,7 +21,7 @@ export default function Layout() {
   const [collapsed, setCollapsed] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const { user, signOut } = useAuth();
-  const { workspaces, workspaceId, setWorkspaceId } = useWorkspace();
+  const { workspaces, workspaceId, setWorkspaceId, status: wsStatus } = useWorkspace();
   const navigate = useNavigate();
   return (
     <div className="flex min-h-screen bg-navy">
@@ -46,7 +47,9 @@ export default function Layout() {
         <header className="flex items-center justify-between gap-3 border-b border-slate-800 bg-sidebar px-4 py-3">
           <div className="flex min-w-0 items-center gap-3">
             <span className="hidden text-sm font-medium text-slate-300 sm:block">Workspace</span>
-            {workspaces.length > 0 ? (
+            {wsStatus === 'auth-loading' || wsStatus === 'loading' ? (
+              <Skeleton className="h-9 w-40" />
+            ) : workspaces.length > 0 ? (
               <select
                 value={workspaceId ?? ''}
                 onChange={(e) => setWorkspaceId(e.target.value)}

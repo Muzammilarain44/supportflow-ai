@@ -7,8 +7,8 @@ import { supabase } from '../lib/supabase';
 import { useWorkspace } from '../context/WorkspaceContext';
 import { useToast } from '../components/Toast';
 import {
-  EmptyState, NoWorkspaceState, PriorityBadge, Skeleton, StatusBadge,
-  btnPrimary, btnSecondary, inputCls, selectCls,
+  EmptyState, NoWorkspaceState, PriorityBadge, Skeleton, StatusBadge, WorkspaceErrorState,
+  WorkspaceLoadingSkeleton, btnPrimary, btnSecondary, inputCls, selectCls,
 } from '../components/ui';
 
 function timeAgo(iso: string | null | undefined): string {
@@ -26,7 +26,7 @@ function formatTime(iso: string): string {
 }
 
 export default function Inbox() {
-  const { workspaceId } = useWorkspace();
+  const { workspaceId, status: wsStatus, error: wsError, refetchWorkspaces } = useWorkspace();
   const { conversationId } = useParams<{ conversationId?: string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -46,7 +46,7 @@ export default function Inbox() {
   });
   const membersQ = useQuery({
     queryKey: ['members', workspaceId],
-    queryFn: () => api.listMembers(workspaceId!),
+    queryFn: () => api.listMembersWithProfiles(workspaceId!),
     enabled: !!workspaceId,
   });
   const conversations = listQ.data?.conversations ?? [];
@@ -73,7 +73,9 @@ export default function Inbox() {
     };
   }, [workspaceId, queryClient]);
 
-  if (!workspaceId) return <NoWorkspaceState />;
+if (wsStatus === 'auth-loading' || wsStatus === 'loading') return <WorkspaceLoadingSkeleton />;
+if (wsStatus === 'error') return <WorkspaceErrorState message={wsError?.message} onRetry={refetchWorkspaces} />;
+if (wsStatus === 'empty' || !workspaceId) return <NoWorkspaceState />;
 
   const showThread = !!conversationId;
   return (
@@ -98,7 +100,7 @@ export default function Inbox() {
               <select className={`${selectCls} flex-1`} value={assignedFilter} onChange={(e) => { setAssignedFilter(e.target.value); setPage(1); }} aria-label="Filter by assignee">
                 <option value="">Anyone</option>
                 <option value="unassigned">Unassigned</option>
-                {(membersQ.data?.members ?? []).map((m) => <option key={m.user_id} value={m.user_id}>{m.user_id.slice(0, 8)}… ({m.role})</option>)}
+                {(membersQ.data?.members ?? []).map((m) => <option key={m.user_id} value={m.user_id}>{m.display_name} ({m.role})</option>)}
               </select>
             </div>
           </div>
@@ -210,6 +212,11 @@ function Thread({ conversationId, onBack }: { conversationId: string; onBack: ()
       setDraft('');
       void queryClient.invalidateQueries({ queryKey: ['messages', workspaceId, conversationId] });
       void queryClient.invalidateQueries({ queryKey: ['conversations', workspaceId] });
+      // An agent reply is customer activity (migration 0007 bumps
+      // last_activity_at on the message insert): refresh the Customers
+      // list and any open customer detail page without a full reload.
+      void queryClient.invalidateQueries({ queryKey: ['customers', workspaceId] });
+      void queryClient.invalidateQueries({ queryKey: ['customer', workspaceId] });
     },
     onError: (err) => toast.error(`Could not send message: ${(err as Error).message}`),
   });
@@ -295,7 +302,7 @@ function ConversationPanel({ conversationId }: { conversationId: string }) {
   });
   const membersQ = useQuery({
     queryKey: ['members', workspaceId],
-    queryFn: () => api.listMembers(workspaceId!),
+    queryFn: () => api.listMembersWithProfiles(workspaceId!),
     enabled: !!workspaceId,
   });
   const ticketsQ = useQuery({
@@ -369,7 +376,7 @@ function ConversationPanel({ conversationId }: { conversationId: string }) {
           >
             <option value="">Unassigned</option>
             {(membersQ.data?.members ?? []).map((m) => (
-              <option key={m.user_id} value={m.user_id}>{m.user_id.slice(0, 8)}… ({m.role})</option>
+              <option key={m.user_id} value={m.user_id}>{m.display_name} ({m.role})</option>
             ))}
           </select>
         </label>

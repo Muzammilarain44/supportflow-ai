@@ -2,12 +2,12 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Plus } from 'lucide-react';
-import { api, type Ticket, type TicketCategory, type TicketStatus } from '../lib/api';
+import { api, type MemberWithProfile, type Ticket, type TicketCategory, type TicketStatus } from '../lib/api';
 import { useWorkspace } from '../context/WorkspaceContext';
 import { useToast } from '../components/Toast';
 import {
-  EmptyState, Modal, NoWorkspaceState, Pagination, PriorityBadge, Skeleton,
-  StatusBadge, btnPrimary, btnSecondary, inputCls, selectCls,
+  EmptyState, Modal, NoWorkspaceState, Pagination, PriorityBadge, Skeleton, WorkspaceErrorState,
+  WorkspaceLoadingSkeleton, StatusBadge, btnPrimary, btnSecondary, inputCls, selectCls,
 } from '../components/ui';
 
 const STATUSES: TicketStatus[] = ['open', 'in_progress', 'waiting_for_customer', 'resolved', 'closed'];
@@ -18,8 +18,14 @@ function formatTime(iso: string): string {
   return new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
+/** Display name for an assignee id from the members-with-profiles list. */
+function assigneeName(members: MemberWithProfile[], userId: string | null): string | null {
+  if (!userId) return null;
+  return members.find((m) => m.user_id === userId)?.display_name ?? 'Unnamed member';
+}
+
 export default function Tickets() {
-  const { workspaceId } = useWorkspace();
+  const { workspaceId, status: wsStatus, error: wsError, refetchWorkspaces } = useWorkspace();
   const toast = useToast();
   const queryClient = useQueryClient();
   const [search, setSearch] = useState('');
@@ -52,15 +58,18 @@ export default function Tickets() {
   });
   const membersQ = useQuery({
     queryKey: ['members', workspaceId],
-    queryFn: () => api.listMembers(workspaceId!),
+    queryFn: () => api.listMembersWithProfiles(workspaceId!),
     enabled: !!workspaceId,
   });
 
   const stats = statsQ.data;
   const tickets = listQ.data?.tickets ?? [];
   const total = listQ.data?.total ?? 0;
+  const members = membersQ.data?.members ?? [];
 
-  if (!workspaceId) return <NoWorkspaceState />;
+if (wsStatus === 'auth-loading' || wsStatus === 'loading') return <WorkspaceLoadingSkeleton />;
+if (wsStatus === 'error') return <WorkspaceErrorState message={wsError?.message} onRetry={refetchWorkspaces} />;
+if (wsStatus === 'empty' || !workspaceId) return <NoWorkspaceState />;
 
   return (
     <div className="space-y-4">
@@ -98,7 +107,7 @@ export default function Tickets() {
         <select className={selectCls} value={assignedTo} onChange={(e) => { setAssignedTo(e.target.value); setPage(1); }} aria-label="Filter by assignee">
           <option value="">Anyone</option>
           <option value="unassigned">Unassigned</option>
-          {(membersQ.data?.members ?? []).map((m) => <option key={m.user_id} value={m.user_id}>{m.user_id.slice(0, 8)}… ({m.role})</option>)}
+          {(membersQ.data?.members ?? []).map((m) => <option key={m.user_id} value={m.user_id}>{m.display_name} ({m.role})</option>)}
         </select>
         <select className={selectCls} value={sort} onChange={(e) => setSort(e.target.value)} aria-label="Sort tickets">
           <option value="created_at">Newest first</option>
@@ -136,7 +145,7 @@ export default function Tickets() {
                   </td>
                   <td className="px-4 py-3"><StatusBadge status={t.status} /></td>
                   <td className="px-4 py-3"><PriorityBadge priority={t.priority} /></td>
-                  <td className="px-4 py-3 text-slate-300">{t.assigned_to ? t.assigned_to.slice(0, 8) + '…' : 'Unassigned'}</td>
+                  <td className="px-4 py-3 text-slate-300">{assigneeName(members, t.assigned_to) ?? 'Unassigned'}</td>
                   <td className="px-4 py-3 text-slate-400">{formatTime(t.updated_at)}</td>
                 </tr>
               ))}
@@ -309,7 +318,7 @@ function CreateTicketModal({ open, onClose, onCreated }: { open: boolean; onClos
 }
 
 export function TicketDetailPage() {
-  const { workspaceId } = useWorkspace();
+  const { workspaceId, status: wsStatus, error: wsError, refetchWorkspaces } = useWorkspace();
   const { ticketId } = useParams<{ ticketId: string }>();
   const navigate = useNavigate();
   const toast = useToast();
@@ -331,7 +340,7 @@ export function TicketDetailPage() {
   });
   const membersQ = useQuery({
     queryKey: ['members', workspaceId],
-    queryFn: () => api.listMembers(workspaceId!),
+    queryFn: () => api.listMembersWithProfiles(workspaceId!),
     enabled: !!workspaceId,
   });
 
@@ -359,7 +368,9 @@ export function TicketDetailPage() {
     }
   }, [detailQ.data]);
 
-  if (!workspaceId) return <NoWorkspaceState />;
+if (wsStatus === 'auth-loading' || wsStatus === 'loading') return <WorkspaceLoadingSkeleton />;
+if (wsStatus === 'error') return <WorkspaceErrorState message={wsError?.message} onRetry={refetchWorkspaces} />;
+if (wsStatus === 'empty' || !workspaceId) return <NoWorkspaceState />;
   if (detailQ.isLoading) return <div className="space-y-2"><Skeleton className="h-10" /><Skeleton className="h-64" /></div>;
   if (detailQ.isError || !detailQ.data) {
     return <div className="rounded-xl border border-danger/50 bg-danger/10 p-4 text-sm text-red-300" role="alert">Could not load this ticket: {(detailQ.error as Error | undefined)?.message ?? 'Not found'}</div>;
@@ -408,12 +419,17 @@ export function TicketDetailPage() {
           <label className="block text-sm text-slate-300">Assignee
             <select className={`${selectCls} mt-1 w-full`} value={ticket.assigned_to ?? ''} onChange={(e) => updateMut.mutate({ assigned_to: e.target.value || null })}>
               <option value="">Unassigned</option>
-              {(membersQ.data?.members ?? []).map((m) => <option key={m.user_id} value={m.user_id}>{m.user_id.slice(0, 8)}… ({m.role})</option>)}
+              {(membersQ.data?.members ?? []).map((m) => <option key={m.user_id} value={m.user_id}>{m.display_name} ({m.role})</option>)}
             </select>
           </label>
         </div>
         <p className="mt-2 text-sm text-slate-400">
-          Assigned to: {assigned_member ? `${assigned_member.user_id.slice(0, 8)}… (${assigned_member.role})` : 'Unassigned'}
+          Assigned to: {(() => {
+            if (!ticket.assigned_to) return 'Unassigned';
+            const member = (membersQ.data?.members ?? []).find((m) => m.user_id === ticket.assigned_to);
+            if (member) return `${member.display_name} (${member.role})`;
+            return assigned_member ? `Unnamed member (${assigned_member.role})` : 'Unnamed member';
+          })()}
         </p>
         <div className="mt-4 flex gap-2">
           {editing ? (

@@ -4,10 +4,10 @@ import { Check, Copy } from 'lucide-react';
 import { api } from '../lib/api';
 import { useWorkspace } from '../context/WorkspaceContext';
 import { useToast } from '../components/Toast';
-import { EmptyState, NoWorkspaceState, Skeleton, btnPrimary, btnSecondary, inputCls } from '../components/ui';
+import { EmptyState, NoWorkspaceState, Skeleton, WorkspaceErrorState, WorkspaceLoadingSkeleton, btnPrimary, btnSecondary, inputCls } from '../components/ui';
 
 export default function WidgetDemo() {
-  const { workspaceId } = useWorkspace();
+  const { workspaceId, status: wsStatus, error: wsError, refetchWorkspaces } = useWorkspace();
   const toast = useToast();
   const queryClient = useQueryClient();
   const [copied, setCopied] = useState(false);
@@ -58,7 +58,9 @@ export default function WidgetDemo() {
     onError: (err) => toast.error(`Could not save widget settings: ${(err as Error).message}`),
   });
 
-  if (!workspaceId) return <NoWorkspaceState />;
+if (wsStatus === 'auth-loading' || wsStatus === 'loading') return <WorkspaceLoadingSkeleton />;
+if (wsStatus === 'error') return <WorkspaceErrorState message={wsError?.message} onRetry={refetchWorkspaces} />;
+if (wsStatus === 'empty' || !workspaceId) return <NoWorkspaceState />;
 
   const embedUrl = settings
     ? `${window.location.origin}/widget-embed?key=${settings.public_key}`
@@ -121,7 +123,7 @@ export default function WidgetDemo() {
           <label className="block text-sm text-slate-300">Allowed origins (one per line)
             <textarea className={`${inputCls} mt-1`} value={originsText} onChange={(e) => setOriginsText(e.target.value)} rows={3} placeholder={'https://example.com\nhttps://shop.example.com'} />
             <span className="mt-1 block text-xs text-slate-500">
-              Stored for now — the API does not enforce origins server-side yet (see docs/widget-embed.md). Treat this list as best-effort until Phase 3.
+              Enforced server-side since Phase 2.1: only these exact origins (plus this app's own domain for previews) may embed and use the widget. Empty list = only this app's own domain. See docs/phase2-1-origins.md.
             </span>
           </label>
           <div className="flex justify-end">
