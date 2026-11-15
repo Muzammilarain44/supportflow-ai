@@ -11,15 +11,26 @@ import { conversationsRouter } from './routes/conversations.js';
 import { ticketsRouter } from './routes/tickets.js';
 import { widgetSettingsRouter } from './routes/widgetSettings.js';
 import { widgetRouter } from './routes/widget.js';
+import { knowledgeRouter } from './routes/knowledge.js';
+import { aiSettingsRouter } from './routes/aiSettings.js';
+import { automationEventsRouter } from './routes/automationEvents.js';
+import { handoffsRouter } from './routes/handoffs.js';
+import { automationRouter, aiWorkspaceRouter } from './routes/automation.js';
 import { errorHandler, notFound } from './errors.js';
 import { logger } from './logger.js';
 
 export function createApp(env: Env): Express {
   const app = express();
   app.use(cors({ origin: env.FRONTEND_URL, credentials: true }));
+  // Phase 3 automation webhook FIRST, before the global JSON parser:
+  // POST /api/automation/process-event verifies an HMAC over the exact
+  // raw request bytes, so this mount uses express.raw() and the route
+  // handler parses the JSON itself. Mounting it after express.json()
+  // would make verification run over a re-serialized body and fail.
+  app.use('/api/automation', express.raw({ type: 'application/json', limit: '1mb' }), automationRouter(env));
   app.use(express.json({ limit: '1mb' }));
   app.use((req, _res, next) => { logger.info(`${req.method} ${req.path}`); next(); });
-  app.get('/health', (_req, res) => res.json({ status: 'ok', service: 'supportflow-api', version: '0.2.1' }));
+  app.get('/health', (_req, res) => res.json({ status: 'ok', service: 'supportflow-api', version: '0.3.0' }));
 
   // Generous limit for the authenticated API: 300 requests / 15 min per user.
   // Runs AFTER authMiddleware so the limiter key includes the user id.
@@ -35,6 +46,12 @@ export function createApp(env: Env): Express {
   app.use('/api/workspaces/:workspaceId/conversations', ...authed, conversationsRouter(env));
   app.use('/api/workspaces/:workspaceId/tickets', ...authed, ticketsRouter(env));
   app.use('/api/workspaces/:workspaceId/widget-settings', ...authed, widgetSettingsRouter(env));
+  // Phase 3 workspace-scoped routers.
+  app.use('/api/workspaces/:workspaceId/knowledge', ...authed, knowledgeRouter(env));
+  app.use('/api/workspaces/:workspaceId/ai-settings', ...authed, aiSettingsRouter(env));
+  app.use('/api/workspaces/:workspaceId/automation-events', ...authed, automationEventsRouter(env));
+  app.use('/api/workspaces/:workspaceId', ...authed, aiWorkspaceRouter(env));
+  app.use('/api/workspaces/:workspaceId/conversations/:conversationId', ...authed, handoffsRouter(env));
 
   // Public widget router — no auth; each endpoint has its own strict
   // per-IP rate limit (see routes/widget.ts).

@@ -42,8 +42,14 @@ for a new message. 0003 and 0004 are not edited. Apply 0005 after 0004
 ## Phase 2.1 — 0006 profiles (Issue 2), 0007 last activity (Issue 3), 0008 widget origins (Issue 4)
 
 All three are additive, idempotent, and do not edit 0001–0005. Apply in
-order after 0005 (steps 6–8 below). None has been applied to live
-Supabase yet — the parent applies them live and verifies.
+order after 0005 (steps 6–8 below). **Applied live and verified in
+Phase 2.1 (2026-11-15):** 0006, 0007 and 0008 were all applied to the
+live Supabase project in order, Render redeployed on the updated API,
+and the live API E2E checks passed (profiles 400s + 403 +
+no-enumeration, trigger bump on agent + visitor messages, origins
+200/403/404 matrix, empty allow-list default = app origin only,
+two-user isolation PASS). The steps below are kept as the record of how
+they were applied.
 
 ### 0006 — `public.profiles` (real member names, not UUIDs)
 
@@ -76,8 +82,12 @@ covers both. It resolves the owning customer from `NEW.customer_id`
 `last_activity_at = GREATEST(current, NEW.created_at)`, guarded so an
 older timestamp can never overwrite a newer one. PATCH customer never
 touches the column, so profile edits do not bump activity. Live trigger
-behaviour is NOT TESTED by the mocked API tests (see the `it.skip` in
-`app-phase2-1-activity.test.ts`) — verify live after applying.
+behaviour was **verified live in Phase 2.1 (2026-11-15)**: agent and
+visitor messages both bump `last_activity_at`, the `greatest()` guard
+holds (an older timestamp never moves it back), and PATCH customer
+leaves it unchanged. (The mocked API tests still skip the live trigger
+behaviour — see the `it.skip` in `app-phase2-1-activity.test.ts` —
+because the trigger only runs in real Postgres.)
 
 ### 0008 — widget origin policy (Issue 4)
 
@@ -383,15 +393,17 @@ column by design (append-only / externally managed).
 
 ## Known limitations
 
-- **True two-user isolation test is still pending.** The Supabase
-  email rate limit blocked creating a second test user, so cross-user
-  isolation has been proven only at the API level (403 for a foreign
-  workspace) and the RLS mechanism level in Phase 1 — not by two real
-  users exercising these Phase 2 tables live. Do not claim it passed
-  until that test runs.
+- **True two-user isolation test PASSED in Phase 2.1 (2026-11-15).**
+  A second real test user confirmed: 403 on all of the first user's
+  workspace/customer/ticket/messages, lists showing only the second
+  user's own workspace, and workspace-scoped email uniqueness.
+  (Earlier, in Phase 2, the Supabase email rate limit had blocked
+  creating a second test user, so isolation had only been proven at
+  the API level and the RLS mechanism level — that limitation no longer
+  applies.)
 - 0003 was partially applied to live Supabase on 2026-11-14 (tables,
   triggers, RLS and policies live; the RPC batch failed with error
-  42883 and was superseded by 0004 — see the 0004 note above). 0004 has
-  been written and reviewed as SQL only; it has not been applied to live
-  Supabase or executed against a database in this step. The parent
-  applies it live later.
+  42883 and was superseded by 0004 — see the 0004 note above). 0004 was
+  applied live afterwards and the 5 widget RPCs were verified working;
+  0005 was also applied live and its idempotency retest passed (201
+  then 200, same message id, 1 row, 1 event).

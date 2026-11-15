@@ -79,6 +79,58 @@ Do not claim a live test passed unless it was run against the real project.
 3. Build ticket CRUD + inbox UI, then the embeddable widget.
 4. Do not start Phase 2 until the user approves it.
 
+## Phase 3 — AI automation (n8n + Groq/Gemini + Knowledge Base)
+
+Phase 3 adds the automation loop on top of Phases 1–2: widget messages
+and ticket changes become outbox events, the dispatcher delivers them
+to n8n, n8n forwards them to the API, and the API runs the AI step
+against the workspace's Knowledge Base.
+
+**What is new**
+- **n8n workflow** (`n8n/workflows/supportflow-ai-phase3.json`) — HMAC-verified
+  webhook, event validation, dedupe on `event_id`, forward to
+  `POST /api/automation/process-event`. Runs on the owner's Windows
+  laptop via a free Cloudflare Tunnel — see `docs/phase3-n8n-setup.md`.
+- **AI providers: Groq first, Gemini fallback** (OpenAI-compatible
+  endpoints). Keys are set in Render only, from the owner via Secure
+  Vault — never committed, never pasted in chat. Default models
+  `openai/gpt-oss-20b` (quality tier `openai/gpt-oss-120b`) /
+  `gemini-3.8-flash` (verify live in the Groq console
+  / Google AI Studio before production use; Gemini free tier may be
+  ~20 requests/day).
+- **Knowledge Base / lexical RAG** — Postgres full-text search over
+  `knowledge_chunks` (migration 0009). Vector retrieval is **not**
+  wired in Phase 3 (migration 0010 adds an optional embedding column
+  only) — that is Phase 4.
+- **AI modes per workspace** (default: **Suggestion Only**): Disabled /
+  Suggestion Only / Automatic Reply / Human Only. Automatic replies
+  only where a workspace policy explicitly permits them.
+- **Audit log** — every AI attempt is written to `ai_executions`.
+- **Member invitations: deferred** (future enhancement, not in Phase 3).
+
+**Honest status: n8n is NOT 24/7.** It runs on the owner's laptop, so
+automation only runs while the laptop is on and the tunnel is up. When
+it is down, events stay `pending` in the outbox and are delivered
+later — nothing is lost, nothing is duplicated. Render / Vercel /
+Supabase run on free tiers with their own caveats (Render cold start
+~1 min, Supabase pause after 7 days inactivity). Full status table:
+`docs/phase3-architecture.md`.
+
+**How to run**
+```bash
+npm --workspace apps/worker run start   # dispatcher: polls the outbox, delivers to n8n
+```
+API and web run as before (`npm run dev`). n8n runs on the laptop —
+full steps in `docs/phase3-n8n-setup.md`. Set `AI_DIRECT_PROCESSING=true`
+to skip n8n and process in the worker directly.
+
+**Docs**
+- Architecture / data flow / modes: `docs/phase3-architecture.md`
+- n8n setup (laptop + tunnel + Render): `docs/phase3-n8n-setup.md`
+- Security (HMAC, secrets, RLS, prompt injection): `docs/phase3-security.md`
+- Troubleshooting: `docs/phase3-troubleshooting.md`
+- Env vars (placeholders only): `.env.example` (Phase 3 section)
+
 ## Troubleshooting
 - `Missing required environment variable SUPABASE_ANON_KEY` — fill `.env` (api) / `apps/web/.env`; the API fails fast on boot by design.
 - `Workspace slug already exists` (409) — pick a different slug.

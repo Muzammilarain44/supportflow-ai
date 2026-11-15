@@ -372,3 +372,203 @@ export const updateProfileSchema = z
   })
   .strict();
 export type UpdateProfileInput = z.infer<typeof updateProfileSchema>;
+
+// ============================================================================
+// Phase 3 — AI agent layer + RAG (Worker B)
+// Schema contract: migration 0009 (Worker A). Tables: knowledge_documents,
+// knowledge_chunks, knowledge_index_jobs, ai_settings, ai_executions,
+// ai_suggestions, handoffs; conversations gains ai_paused/handoff_reason/
+// handed_off_at; tickets gains escalation_reason/escalated_at.
+// ============================================================================
+
+export const aiModeEnum = z.enum(['disabled', 'suggestion', 'auto', 'human_only']);
+export type AiMode = z.infer<typeof aiModeEnum>;
+
+export const aiProviderEnum = z.enum(['groq', 'gemini']);
+export type AiProvider = z.infer<typeof aiProviderEnum>;
+
+export const knowledgeKindEnum = z.enum(['article', 'faq']);
+export type KnowledgeKind = z.infer<typeof knowledgeKindEnum>;
+
+export const knowledgeIndexJobStatusEnum = z.enum(['pending', 'processing', 'done', 'failed']);
+export type KnowledgeIndexJobStatus = z.infer<typeof knowledgeIndexJobStatusEnum>;
+
+export const aiExecutionStatusEnum = z.enum(['pending', 'success', 'failed', 'escalated', 'skipped']);
+export type AiExecutionStatus = z.infer<typeof aiExecutionStatusEnum>;
+
+export const aiSuggestionStatusEnum = z.enum(['pending', 'accepted', 'edited', 'rejected']);
+export type AiSuggestionStatus = z.infer<typeof aiSuggestionStatusEnum>;
+
+export const handoffTriggeredByEnum = z.enum(['ai', 'agent', 'system']);
+export type HandoffTriggeredBy = z.infer<typeof handoffTriggeredByEnum>;
+
+// ---------- Knowledge base ----------
+export const createKnowledgeDocumentSchema = z.object({
+  title: z.string().trim().min(2, 'Title must be at least 2 characters').max(200),
+  content: z.string().min(1, 'Content is required').max(50000),
+  kind: knowledgeKindEnum,
+});
+export type CreateKnowledgeDocumentInput = z.infer<typeof createKnowledgeDocumentSchema>;
+
+export const updateKnowledgeDocumentSchema = z
+  .object({
+    title: z.string().trim().min(2, 'Title must be at least 2 characters').max(200).optional(),
+    content: z.string().min(1, 'Content is required').max(50000).optional(),
+    kind: knowledgeKindEnum.optional(),
+    enabled: z.boolean().optional(),
+  })
+  .strict();
+export type UpdateKnowledgeDocumentInput = z.infer<typeof updateKnowledgeDocumentSchema>;
+
+export interface KnowledgeDocument {
+  id: string;
+  workspace_id: string;
+  title: string;
+  content: string;
+  kind: KnowledgeKind;
+  enabled: boolean;
+  archived: boolean;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface KnowledgeChunk {
+  id: string;
+  document_id: string;
+  workspace_id: string;
+  chunk_index: number;
+  content: string;
+  source_title: string;
+  created_at: string;
+}
+
+export interface KnowledgeIndexJob {
+  id: string;
+  document_id: string;
+  workspace_id: string;
+  status: KnowledgeIndexJobStatus;
+  error: string | null;
+  attempts: number;
+  created_at: string;
+  updated_at: string;
+}
+
+// ---------- AI settings ----------
+// NOTE: API keys are NEVER part of any settings schema — keys live only in
+// server environment variables and are never accepted or returned by the API.
+export const updateAiSettingsSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    mode: aiModeEnum.optional(),
+    provider_order: z.array(aiProviderEnum).min(1, 'At least one provider is required').max(2).optional(),
+    auto_reply_require_grounding: z.boolean().optional(),
+    escalation_on_low_confidence: z.boolean().optional(),
+  })
+  .strict();
+export type UpdateAiSettingsInput = z.infer<typeof updateAiSettingsSchema>;
+
+/** Defaults returned by GET ai-settings when the workspace has no row yet. */
+export const DEFAULT_AI_SETTINGS = {
+  enabled: false,
+  mode: 'suggestion',
+  provider_order: ['groq', 'gemini'],
+  auto_reply_require_grounding: true,
+  escalation_on_low_confidence: true,
+} as const;
+
+export interface AiSettings {
+  id: string;
+  workspace_id: string;
+  enabled: boolean;
+  mode: AiMode;
+  provider_order: AiProvider[];
+  auto_reply_require_grounding: boolean;
+  escalation_on_low_confidence: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+// ---------- AI executions / suggestions / handoffs ----------
+export interface AiExecution {
+  id: string;
+  workspace_id: string;
+  conversation_id: string | null;
+  message_id: string | null;
+  event_id: string | null;
+  provider: string | null;
+  model: string | null;
+  mode: string | null;
+  status: AiExecutionStatus;
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  latency_ms: number | null;
+  error: string | null;
+  suggestion: string | null;
+  created_at: string;
+}
+
+export interface AiSuggestionSource {
+  documentId: string;
+  documentTitle: string;
+}
+
+export interface AiSuggestion {
+  id: string;
+  workspace_id: string;
+  conversation_id: string;
+  message_id: string | null;
+  suggestion: string;
+  sources: AiSuggestionSource[];
+  status: AiSuggestionStatus;
+  reviewed_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Handoff {
+  id: string;
+  workspace_id: string;
+  conversation_id: string;
+  ticket_id: string | null;
+  reason: string;
+  triggered_by: HandoffTriggeredBy;
+  ai_paused: boolean;
+  resumed_at: string | null;
+  created_at: string;
+}
+
+export const acceptSuggestionSchema = z.object({
+  edited_text: z.string().trim().min(1, 'Edited text is required').max(5000).optional(),
+});
+export type AcceptSuggestionInput = z.infer<typeof acceptSuggestionSchema>;
+
+// ---------- Automation (process-event payload) ----------
+export const automationEventSchema = z.object({
+  id: z.string().min(1, 'Event id is required'),
+  event_type: z.string().min(1, 'event_type is required'),
+  workspace_id: z.string().min(1, 'workspace_id is required'),
+  entity_type: z.string().min(1, 'entity_type is required'),
+  entity_id: z.string().min(1, 'entity_id is required'),
+  payload: z.record(z.unknown()).default({}),
+});
+export type AutomationEventInput = z.infer<typeof automationEventSchema>;
+
+export interface AiOverview {
+  ai_enabled: boolean;
+  mode: AiMode;
+  automation: {
+    pending: number;
+    processing: number;
+    failed: number;
+    dead: number;
+    last_processed_at: string | null;
+  };
+  totals: {
+    assisted_conversations: number;
+    suggestions: number;
+    auto_replies: number;
+    handoffs: number;
+    failed_executions: number;
+  };
+}

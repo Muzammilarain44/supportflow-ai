@@ -1,0 +1,454 @@
+{
+  "active": false,
+  "connections": {
+    "Call process-event": {
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "Delivery OK?",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "Delivery OK?": {
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "Respond 200 \u2014 Received",
+            "type": "main"
+          }
+        ],
+        [
+          {
+            "index": 0,
+            "node": "Respond 500 \u2014 Delivery failed",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "Duplicate event?": {
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "Respond 200 \u2014 Duplicate",
+            "type": "main"
+          }
+        ],
+        [
+          {
+            "index": 0,
+            "node": "Sign request",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "Event valid?": {
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "Duplicate event?",
+            "type": "main"
+          }
+        ],
+        [
+          {
+            "index": 0,
+            "node": "Respond 400 \u2014 Invalid event",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "Sign request": {
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "Call process-event",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "Signature valid?": {
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "Validate event",
+            "type": "main"
+          }
+        ],
+        [
+          {
+            "index": 0,
+            "node": "Respond 401 \u2014 Invalid signature",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "Validate event": {
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "Event valid?",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "Verify signature": {
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "Signature valid?",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "Webhook \u2014 SupportFlow event": {
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "Verify signature",
+            "type": "main"
+          }
+        ]
+      ]
+    }
+  },
+  "name": "SupportFlow AI \u2014 Phase 3 automation (n8n)",
+  "nodes": [
+    {
+      "id": "85549375-77f1-44da-9f29-6d40d951e09c",
+      "name": "README \u2014 import + limits",
+      "parameters": {
+        "color": 4,
+        "content": "## SupportFlow AI \u2014 Phase 3 (n8n on the owner's laptop)\n\n**What this workflow does:** receives one automation event at a time from the SupportFlow dispatcher (Render), verifies its HMAC signature, drops duplicates, and forwards it to `POST /api/automation/process-event`, where the API runs the AI step (Groq first, Gemini fallback) and acts on the workspace's AI mode (Suggestion Only by default).\n\n### Import\n1. n8n \u2192 Workflows \u2192 Import from file \u2192 pick this JSON.\n2. Set the workflow env vars (n8n \u2192 Settings \u2192 Variables, or the environment n8n starts with): `N8N_WEBHOOK_SECRET` (same random secret as Render `AUTOMATION_WEBHOOK_SECRET`) and `API_BASE_URL` (e.g. `https://supportflow-api-q0md.onrender.com`). No URLs or secrets are hardcoded in this file.\n3. Activate the workflow (toggle top-right). Copy the **Production URL** of the Webhook node.\n4. Put that URL in Render: service `supportflow-api` \u2192 Environment \u2192 `N8N_WEBHOOK_URL=<production webhook URL>`.\n\n### Webhook URL\n`<cloudflare-tunnel-public-url>/webhook/supportflow-message` \u2014 the tunnel URL comes from `cloudflared tunnel --url http://localhost:5678` (quick tunnel) or a named tunnel (stable URL, recommended). See `docs/phase3-n8n-setup.md`.\n\n### Required: Raw Body ON\nThe Webhook node has **Options \u2192 Raw Body** enabled. The dispatcher signs `${timestamp}.${rawBody}`; without the raw body the signature cannot be verified and every delivery gets a 401. If you re-create the Webhook node, turn Raw Body back on.\n\n### Honest limitation \u2014 NOT 24/7\nn8n runs on the owner's Windows laptop, exposed via a free Cloudflare Tunnel. Automation only runs while the laptop is on and the tunnel is up. When it is off/asleep/offline the dispatcher cannot reach the webhook and leaves events `pending` with backoff \u2014 nothing is lost, nothing is duplicated. See `docs/phase3-n8n-setup.md` and `docs/phase3-architecture.md`.\n\n### Data retention\nn8n keeps execution records in its local SQLite database (`%USERPROFILE%\\.n8n`) under n8n's defaults. This workflow never logs message bodies, emails, or phone numbers \u2014 the dispatcher only ever sends ids and status values, and the Code nodes pass the event through without logging it. If you want executions pruned, change it in n8n \u2192 Settings \u2192 Executions (data retention), do not edit this workflow.\n\n### Idempotency\n`Validate event` dedupes on `event_id` using workflow static data (24 h window, max 5000 ids). Static data is only saved for **active (production)** executions \u2014 manual test runs do not persist seen ids, so a re-test can legitimately re-deliver an event.",
+        "height": 560,
+        "width": 460
+      },
+      "position": [
+        -480,
+        -80
+      ],
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1
+    },
+    {
+      "id": "bed4c782-5b17-4deb-9cdd-b8f2df9d56a0",
+      "name": "Webhook \u2014 SupportFlow event",
+      "notes": "Raw Body MUST stay on \u2014 the signature is verified over the exact bytes the dispatcher sent. Production URL goes in Render as N8N_WEBHOOK_URL.",
+      "parameters": {
+        "httpMethod": "POST",
+        "options": {
+          "rawBody": true
+        },
+        "path": "supportflow-message",
+        "responseMode": "responseNode"
+      },
+      "position": [
+        0,
+        0
+      ],
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "webhookId": "5ed35a67-4e48-426e-ab03-11439f2f627e"
+    },
+    {
+      "id": "3ee9ec08-4038-476e-8c88-3901d490987a",
+      "name": "Verify signature",
+      "notes": "HMAC-SHA256 over `${timestamp}.${rawBody}`, secret from $env.N8N_WEBHOOK_SECRET, \u00b1300s replay window. Fails closed: any doubt \u2192 401.",
+      "parameters": {
+        "jsCode": "// Verify the dispatcher's HMAC-SHA256 signature.\n// Signed string: `${x-sf-timestamp}.${rawBody}` where rawBody is the exact\n// JSON bytes the dispatcher POSTed. Secret comes from $env.N8N_WEBHOOK_SECRET\n// (same value as Render AUTOMATION_WEBHOOK_SECRET). Never hardcode it here.\n// Timestamp tolerance: +/-300 seconds (replay protection).\n//\n// Raw body source (in priority order):\n//   1. binary.data.data (base64) \u2014 present when the Webhook node's Raw Body\n//      option is ON (required). If this is missing, Raw Body got turned off.\n//   2. a string json.body.\n//   3. JSON.stringify(json.body) \u2014 last resort; can fail verification if key\n//      order differs from what the dispatcher sent, which is exactly why\n//      Raw Body must be ON.\n// Also parses the event once and passes it on, so later nodes do not depend\n// on how n8n exposed the body.\nconst crypto = require('crypto');\n\nconst item = $input.first();\nconst headers = item.json.headers || {};\nconst signature = headers['x-sf-signature'] || '';\nconst timestamp = headers['x-sf-timestamp'] || '';\n\nlet rawBody = '';\nlet rawBodySource = 'none';\nconst bin = item.binary && item.binary.data && item.binary.data.data;\nif (typeof bin === 'string' && bin.length > 0) {\n  rawBody = Buffer.from(bin, 'base64').toString('utf8');\n  rawBodySource = 'binary';\n} else if (typeof item.json.body === 'string') {\n  rawBody = item.json.body;\n  rawBodySource = 'string-body';\n} else if (item.json.body) {\n  rawBody = JSON.stringify(item.json.body);\n  rawBodySource = 'stringified-body';\n}\n\nlet event = null;\ntry {\n  event = rawBody ? JSON.parse(rawBody) : (item.json.body || null);\n} catch (e) {\n  event = null;\n}\n\nlet verified = false;\nlet reason = '';\nconst secret = $env.N8N_WEBHOOK_SECRET;\nif (!secret) {\n  reason = 'N8N_WEBHOOK_SECRET is not set in the n8n environment';\n} else if (!signature || !timestamp) {\n  reason = 'missing x-sf-signature or x-sf-timestamp header';\n} else if (!/^\\d+$/.test(timestamp)) {\n  reason = 'x-sf-timestamp is not numeric';\n} else if (Math.abs(Math.floor(Date.now() / 1000) - parseInt(timestamp, 10)) > 300) {\n  reason = 'timestamp outside +/-300s tolerance (replay protection)';\n} else if (!rawBody) {\n  reason = 'empty body \u2014 is Raw Body enabled on the Webhook node?';\n} else {\n  const expected = crypto\n    .createHmac('sha256', secret)\n    .update(`${timestamp}.${rawBody}`)\n    .digest('hex');\n  // Constant-time compare; guard the length check first (timingSafeEqual throws on mismatch).\n  const a = Buffer.from(signature, 'utf8');\n  const b = Buffer.from(expected, 'utf8');\n  verified = a.length === b.length && crypto.timingSafeEqual(a, b);\n  if (!verified) reason = 'signature mismatch';\n}\n\nreturn [{ json: { verified, reason, rawBodySource, event } }];\n"
+      },
+      "position": [
+        240,
+        0
+      ],
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2
+    },
+    {
+      "id": "40914720-fce1-492e-955d-e341b95b6c05",
+      "name": "Signature valid?",
+      "parameters": {
+        "conditions": [
+          {
+            "id": "ea62f3ca-2075-48a7-aa3c-9c8e0704e1f7",
+            "leftValue": "={{ $json.verified }}",
+            "operator": {
+              "operation": "true",
+              "type": "boolean"
+            },
+            "rightValue": ""
+          }
+        ],
+        "options": {}
+      },
+      "position": [
+        480,
+        0
+      ],
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2
+    },
+    {
+      "id": "20bbf4af-cc88-4654-9e98-676f420a0fdb",
+      "name": "Respond 401 \u2014 Invalid signature",
+      "parameters": {
+        "options": {},
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ error: 'invalid signature', reason: $json.reason || 'signature verification failed' }) }}",
+        "responseCode": 401
+      },
+      "position": [
+        720,
+        240
+      ],
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4
+    },
+    {
+      "id": "274ec32d-e1d0-4709-8de4-bb74888d38b1",
+      "name": "Validate event",
+      "notes": "Checks event_id / event_type / workspace_id and the known event set; dedupes on event_id via workflow static data (24 h, production executions only).",
+      "parameters": {
+        "jsCode": "// Validate the event shape and drop duplicates (idempotency).\n// Required: event_id (or id), event_type, workspace_id.\n// Known event types are the outbox types from apps/api/src/lib/outbox.ts and\n// supabase/migrations/0003_phase2_support_platform.sql.\n// Duplicates are remembered in workflow static data, keyed by event_id,\n// for 24 hours (max 5000 entries, oldest pruned first). Static data is only\n// persisted for ACTIVE (production) executions \u2014 manual test runs do not\n// save seen ids, so re-running a test can legitimately re-deliver an event.\n// No customer data is logged here: only ids and the event type.\nconst KNOWN_EVENT_TYPES = [\n  'customer.message.created',\n  'conversation.created',\n  'ticket.created',\n  'ticket.priority.changed',\n  'ticket.assigned',\n  'ticket.resolved',\n];\n\nconst input = $input.first().json;\nconst rawEvent = input.event || {};\nconst eventId = rawEvent.event_id || rawEvent.id || null;\nconst eventType = rawEvent.event_type || null;\nconst workspaceId = rawEvent.workspace_id || null;\n\nlet ok = true;\nlet reason = '';\nif (!eventId) { ok = false; reason = 'missing event_id'; }\nelse if (!eventType) { ok = false; reason = 'missing event_type'; }\nelse if (!KNOWN_EVENT_TYPES.includes(eventType)) { ok = false; reason = `unknown event_type: ${eventType}`; }\nelse if (!workspaceId) { ok = false; reason = 'missing workspace_id'; }\n\nlet duplicate = false;\nif (ok) {\n  const staticData = $getWorkflowStaticData('global');\n  staticData.seen = staticData.seen || {};\n  const now = Date.now();\n  const DAY_MS = 24 * 60 * 60 * 1000;\n  // Prune entries older than 24 h.\n  for (const key of Object.keys(staticData.seen)) {\n    if (now - staticData.seen[key] > DAY_MS) delete staticData.seen[key];\n  }\n  // Cap the store: drop the oldest entries if it grows past 5000.\n  const keys = Object.keys(staticData.seen);\n  if (keys.length > 5000) {\n    keys\n      .sort((a, b) => staticData.seen[a] - staticData.seen[b])\n      .slice(0, keys.length - 5000)\n      .forEach((k) => delete staticData.seen[k]);\n  }\n  if (staticData.seen[eventId]) {\n    duplicate = true;\n  } else {\n    staticData.seen[eventId] = now;\n  }\n}\n\n// Normalise the event: always expose event_id, keep the dispatcher's fields.\nconst event = { ...rawEvent, event_id: eventId };\nreturn [{ json: { ok, duplicate, reason, event_type: eventType, event } }];\n"
+      },
+      "position": [
+        720,
+        0
+      ],
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2
+    },
+    {
+      "id": "042b5cee-3bc3-40eb-9eed-ae09dea44f9f",
+      "name": "Event valid?",
+      "parameters": {
+        "conditions": [
+          {
+            "id": "ce7f6c22-390e-4450-9128-784ed7c0bea2",
+            "leftValue": "={{ $json.ok }}",
+            "operator": {
+              "operation": "true",
+              "type": "boolean"
+            },
+            "rightValue": ""
+          }
+        ],
+        "options": {}
+      },
+      "position": [
+        960,
+        0
+      ],
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2
+    },
+    {
+      "id": "81d9ac36-af24-4127-a9e7-3207aff87742",
+      "name": "Respond 400 \u2014 Invalid event",
+      "parameters": {
+        "options": {},
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ error: 'invalid event', reason: $json.reason || 'event failed validation' }) }}",
+        "responseCode": 400
+      },
+      "position": [
+        1200,
+        240
+      ],
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4
+    },
+    {
+      "id": "a38d42af-6186-4eb8-a4ae-3cdb61c9b706",
+      "name": "Duplicate event?",
+      "parameters": {
+        "conditions": [
+          {
+            "id": "758442f7-7440-4006-9d0b-cf32bbb0862b",
+            "leftValue": "={{ $json.duplicate }}",
+            "operator": {
+              "operation": "true",
+              "type": "boolean"
+            },
+            "rightValue": ""
+          }
+        ],
+        "options": {}
+      },
+      "position": [
+        1200,
+        0
+      ],
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2
+    },
+    {
+      "id": "593f4f18-00af-4d4e-a774-745c390491a4",
+      "name": "Respond 200 \u2014 Duplicate",
+      "parameters": {
+        "options": {},
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ received: true, duplicate: true }) }}",
+        "responseCode": 200
+      },
+      "position": [
+        1440,
+        240
+      ],
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4
+    },
+    {
+      "id": "2dc8de5d-f2d4-4160-a12b-83f2f8c24427",
+      "name": "Sign request",
+      "notes": "Re-signs with the same secret for the API call. The HTTP node must send JSON.stringify($json.event) \u2014 the exact string signed here.",
+      "parameters": {
+        "jsCode": "// Sign the outbound call to the API with the same shared secret.\n// Signed string: `${timestamp}.${rawBody}` where rawBody is exactly the\n// JSON string the HTTP Request node will send (JSON.stringify of the same\n// event object), so the API's verification over the bytes it receives\n// matches. The API verifies this signature on POST /api/automation/process-event.\nconst crypto = require('crypto');\n\nconst event = $input.first().json.event;\nconst timestamp = Math.floor(Date.now() / 1000).toString();\nconst secret = $env.N8N_WEBHOOK_SECRET;\nif (!secret) {\n  throw new Error('N8N_WEBHOOK_SECRET is not set in the n8n environment');\n}\nconst rawBody = JSON.stringify(event);\nconst signature = crypto\n  .createHmac('sha256', secret)\n  .update(`${timestamp}.${rawBody}`)\n  .digest('hex');\n\nreturn [{ json: { event, signature, timestamp } }];\n"
+      },
+      "position": [
+        1440,
+        0
+      ],
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2
+    },
+    {
+      "id": "037f9e29-5745-4e74-8cc8-805b041f5872",
+      "maxTries": 2,
+      "name": "Call process-event",
+      "notes": "API base URL from $env.API_BASE_URL \u2014 no hardcoded URL. Timeout 20s. Never Error is ON so 5xx reaches the 'Delivery OK?' check and is answered 500 (dispatcher retries). Retry On Fail (2 tries) covers network-level failures only; process-event must dedupe on event_id, so a retried POST is safe.",
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "authentication": "none",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-sf-signature",
+              "value": "={{ $json.signature }}"
+            },
+            {
+              "name": "x-sf-timestamp",
+              "value": "={{ $json.timestamp }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "jsonBody": "={{ JSON.stringify($json.event) }}",
+        "method": "POST",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 20000
+        },
+        "sendBody": true,
+        "sendHeaders": true,
+        "specifyBody": "json",
+        "url": "={{ $env.API_BASE_URL }}/api/automation/process-event"
+      },
+      "position": [
+        1680,
+        0
+      ],
+      "retryOnFail": true,
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "a01192ca-506e-414a-b963-38f3f6752eed",
+      "name": "Delivery OK?",
+      "parameters": {
+        "combinator": "or",
+        "conditions": [
+          {
+            "id": "12b93a20-dae6-4e05-8c86-387254193f39",
+            "leftValue": "={{ $json.statusCode }}",
+            "operator": {
+              "operation": "equals",
+              "type": "number"
+            },
+            "rightValue": 200
+          },
+          {
+            "id": "d19913f1-2b90-4666-b320-d398a81d02b1",
+            "leftValue": "={{ $json.statusCode }}",
+            "operator": {
+              "operation": "equals",
+              "type": "number"
+            },
+            "rightValue": 202
+          }
+        ],
+        "options": {}
+      },
+      "position": [
+        1920,
+        0
+      ],
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2
+    },
+    {
+      "id": "6205b722-a913-4030-90dc-f5ed24c06534",
+      "name": "Respond 200 \u2014 Received",
+      "parameters": {
+        "options": {},
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ received: true }) }}",
+        "responseCode": 200
+      },
+      "position": [
+        2160,
+        0
+      ],
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4
+    },
+    {
+      "id": "5c9a77da-d46a-4564-ba6c-8a94b9e14669",
+      "name": "Respond 500 \u2014 Delivery failed",
+      "notes": "500 tells the dispatcher to leave the event pending and retry with backoff. Do not answer 200 here \u2014 a 200 would mark a failed delivery as done.",
+      "parameters": {
+        "options": {},
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ error: 'delivery failed', statusCode: $json.statusCode || null }) }}",
+        "responseCode": 500
+      },
+      "position": [
+        2160,
+        240
+      ],
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4
+    }
+  ],
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
