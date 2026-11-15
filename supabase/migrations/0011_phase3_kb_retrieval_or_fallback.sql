@@ -14,9 +14,15 @@
 -- Workspace filtering and enabled / non-archived-only documents are
 -- unchanged in both tiers; ranking stays ts_rank, tier 1 first.
 --
--- Idempotent: CREATE OR REPLACE + the same grants as 0009, so the file
--- can be re-applied safely. No tables, columns, policies or data change.
+-- Idempotent: DROP first, then CREATE — CREATE OR REPLACE alone fails
+-- live with ERROR 42P13 ("cannot change return type of existing
+-- function") because the live function's row type differs from this
+-- definition (verified 2026-11-15 when 0011 first ran). DROP removes the
+-- old grants too; they are re-applied below. No tables, columns,
+-- policies or data change.
 -- ============================================================================
+
+drop function if exists public.search_knowledge_chunks(uuid, text, int);
 
 create or replace function public.search_knowledge_chunks(
   p_workspace_id uuid,
