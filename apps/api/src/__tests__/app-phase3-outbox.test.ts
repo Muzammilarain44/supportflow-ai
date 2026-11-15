@@ -414,6 +414,63 @@ describe('0009 migration SQL shape', () => {
   });
 });
 
+describe('0011 migration SQL shape', () => {
+  const migrationPath = path.join(
+    path.dirname(fileURLToPath(import.meta.url)),
+    '..',
+    '..',
+    '..',
+    '..',
+    'supabase',
+    'migrations',
+    '0011_phase3_kb_retrieval_or_fallback.sql',
+  );
+  const sql = readFileSync(migrationPath, 'utf8');
+
+  it('replaces search_knowledge_chunks with the same signature and grants', () => {
+    expect(sql).toContain('create or replace function public.search_knowledge_chunks(');
+    expect(sql).toContain('p_workspace_id uuid');
+    expect(sql).toContain('p_query text');
+    expect(sql).toContain('p_limit int default 5');
+    expect(sql).toContain(
+      'grant execute on function public.search_knowledge_chunks(uuid, text, int) to authenticated, service_role',
+    );
+    expect(sql).toContain(
+      'revoke all on function public.search_knowledge_chunks(uuid, text, int) from public',
+    );
+  });
+
+  it('two tiers: strict AND first, websearch OR fallback, tier 1 never repeated', () => {
+    expect(sql).toContain("plainto_tsquery('english', p_query) as q_and");
+    expect(sql).toContain("websearch_to_tsquery('english', p_query) as q_or");
+    expect(sql).toContain('ts_rank(c.search_vector, p.q_and)');
+    expect(sql).toContain('ts_rank(c.search_vector, p.q_or)');
+    expect(sql).toContain('and c.search_vector @@ p.q_and');
+    expect(sql).toContain('and c.search_vector @@ p.q_or');
+    expect(sql).toContain('and not (c.search_vector @@ p.q_and)');
+    expect(sql).toContain('order by tier asc, rank desc');
+  });
+
+  it('keeps the workspace / enabled / non-archived filters in both tiers', () => {
+    const andMatches = sql.match(/c\.workspace_id = p_workspace_id/g) ?? [];
+    expect(andMatches.length).toBe(2);
+    expect((sql.match(/d\.enabled = true/g) ?? []).length).toBe(2);
+    expect((sql.match(/d\.archived = false/g) ?? []).length).toBe(2);
+  });
+
+  it('changes no tables, columns, policies or data', () => {
+    // Negative checks run on comment-stripped SQL: the header comments
+    // mention these words in prose ("No tables, columns, policies or
+    // data change").
+    const sqlNoComments = sql.replace(/^--.*$/gm, '');
+    expect(sqlNoComments).not.toMatch(/create table/i);
+    expect(sqlNoComments).not.toMatch(/alter table/i);
+    expect(sqlNoComments).not.toMatch(/enable row level security/i);
+    expect(sqlNoComments).not.toMatch(/create policy/i);
+    expect(sqlNoComments).not.toMatch(/^\s*(insert|update|delete)\s+into\s+public\./im);
+  });
+});
+
 describe('outbox RPC contract via mocked Supabase client', () => {
   beforeEach(() => seedEvents());
 

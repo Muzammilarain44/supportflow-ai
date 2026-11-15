@@ -517,10 +517,10 @@ describe('processAutomationEvent', () => {
       sender_type: 'customer', body, client_message_id: 'c-1',
     });
   }
-  function seedSettings(mode: string, enabled = true, grounding = true) {
+  function seedSettings(mode: string, enabled = true, grounding = true, order: string[] = ['groq', 'gemini']) {
     pState.settings.push({
       id: 'set-1', workspace_id: 'ws-1', enabled, mode,
-      provider_order: ['groq', 'gemini'], auto_reply_require_grounding: grounding,
+      provider_order: order, auto_reply_require_grounding: grounding,
       escalation_on_low_confidence: true,
     });
   }
@@ -556,6 +556,82 @@ describe('processAutomationEvent', () => {
     expect(pState.executions).toHaveLength(1);
     expect(pState.executions[0]!.status).toBe('success');
     expect(pState.executions[0]!.provider).toBe('groq');
+  });
+
+  it('suggestion mode is idempotent: a duplicate process-event creates no second suggestion and no second provider call', async () => {
+    seedConversation();
+    seedCustomerMessage();
+    seedSettings('suggestion');
+    seedKnowledge();
+    let calls = 0;
+    const countingGenerate = async () => {
+      calls += 1;
+      return { text: 'Refunds are available within 30 days of purchase.', provider: 'groq' as const, model: 'gpt-oss-120b', promptTokens: 10, completionTokens: 20, latencyMs: 5 };
+    };
+    const event = baseEvent();
+    const res1 = await processAutomationEvent(fakeClient, event, { generate: countingGenerate as any });
+    expect(res1.outcome).toBe('suggestion_created');
+    expect(res1.id).toBeTruthy();
+    // Re-processing the same event returns the existing draft — the
+    // provider is not called again and no second suggestion is stored.
+    const res2 = await processAutomationEvent(fakeClient, event, { generate: countingGenerate as any });
+    expect(res2.outcome).toBe('suggestion_created');
+    expect(res2.id).toBe(res1.id);
+    expect(pState.suggestions).toHaveLength(1);
+    expect(pState.executions).toHaveLength(1);
+    expect(calls).toBe(1);
+  });
+
+  it('per-workspace provider_order wins: ["gemini"] makes generation use Gemini first', async () => {
+    seedConversation();
+    seedCustomerMessage();
+    seedSettings('suggestion', true, true, ['gemini']);
+    seedKnowledge();
+    const seenConfigs: AiConfig[] = [];
+    const capturingGenerate = async (_input: any, cfg: AiConfig) => {
+      seenConfigs.push(cfg);
+      return { text: 'Gemini draft reply.', provider: 'gemini' as const, model: 'gemini-3.8-flash', promptTokens: 10, completionTokens: 20, latencyMs: 5 };
+    };
+    const res = await processAutomationEvent(fakeClient, baseEvent(), {
+      generate: capturingGenerate as any,
+      config: TEST_CONFIG,
+    });
+    expect(res.outcome).toBe('suggestion_created');
+    expect(seenConfigs).toHaveLength(1);
+    expect(seenConfigs[0]!.providerOrder).toEqual(['gemini']);
+    expect(pState.executions[0]!.provider).toBe('gemini');
+    expect(pState.executions[0]!.model).toBe('gemini-3.8-flash');
+  });
+
+  it('per-workspace provider_order ["groq","gemini"] keeps Groq first; an empty row order falls back to the env config', async () => {
+    seedConversation();
+    seedCustomerMessage();
+    seedSettings('suggestion', true, true, ['groq', 'gemini']);
+    seedKnowledge();
+    const seen: AiConfig[] = [];
+    const gen = async (_input: any, cfg: AiConfig) => {
+      seen.push(cfg);
+      return { text: 'Groq draft.', provider: 'groq' as const, model: 'gpt-oss-120b', promptTokens: 1, completionTokens: 2, latencyMs: 1 };
+    };
+    const res = await processAutomationEvent(fakeClient, baseEvent(), { generate: gen as any, config: TEST_CONFIG });
+    expect(res.outcome).toBe('suggestion_created');
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.providerOrder).toEqual(['groq', 'gemini']);
+
+    // Same workspace, order cleared to []: the env config order is used.
+    pState.settings[0]!.provider_order = [];
+    pState.suggestions.length = 0;
+    pState.executions.length = 0;
+    const envOrderConfig: AiConfig = { ...TEST_CONFIG, providerOrder: ['gemini', 'groq'] };
+    const seen2: AiConfig[] = [];
+    const gen2 = async (_input: any, cfg: AiConfig) => {
+      seen2.push(cfg);
+      return { text: 'Gemini draft.', provider: 'gemini' as const, model: 'gemini-3.8-flash', promptTokens: 1, completionTokens: 2, latencyMs: 1 };
+    };
+    const res2 = await processAutomationEvent(fakeClient, baseEvent(), { generate: gen2 as any, config: envOrderConfig });
+    expect(res2.outcome).toBe('suggestion_created');
+    expect(seen2).toHaveLength(1);
+    expect(seen2[0]!.providerOrder).toEqual(['gemini', 'groq']);
   });
 
   it('auto mode sends an idempotent reply and records it as accepted', async () => {

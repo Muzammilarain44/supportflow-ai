@@ -40,9 +40,17 @@ Primary path — full-text search with ranking, via the RPC
 `search_knowledge_chunks(p_workspace_id, p_query, p_limit)`:
 
 ```sql
--- Required RPC (Worker A: include in migration 0009, or add as 0010).
+-- Required RPC (migration 0009, fixed in 0011).
 -- SECURITY DEFINER so the service-role processor can read across RLS;
 -- workspace filtering is enforced inside the function.
+--
+-- Two tiers: the strict plainto_tsquery AND match runs first (tier 1 —
+-- keyword queries behave exactly as in 0009), then any remaining slots
+-- are filled with websearch_to_tsquery OR matches (tier 2 — natural
+-- questions: unquoted terms are OR'd, quoted phrases are AND'd). The
+-- AND-only version returned 0 rows for natural questions ("Hi, can you
+-- please confirm your refund policy?") because the chunk contains none
+-- of hi / please / confirm / get — see migration 0011.
 create or replace function public.search_knowledge_chunks(
   p_workspace_id uuid,
   p_query text,
@@ -59,37 +67,66 @@ stable
 security definer
 set search_path = public
 as $$
-  select
-    c.content,
-    d.title,
-    c.document_id,
-    ts_rank(c.search_vector, plainto_tsquery('english', p_query)) as rank
-  from public.knowledge_chunks c
-  join public.knowledge_documents d on d.id = c.document_id
-  where c.workspace_id = p_workspace_id
-    and d.enabled = true
-    and d.archived = false
-    and c.search_vector @@ plainto_tsquery('english', p_query)
-  order by rank desc
+  with params as (
+    select
+      plainto_tsquery('english', p_query) as q_and,
+      websearch_to_tsquery('english', p_query) as q_or
+  ),
+  tiered as (
+    select
+      c.content,
+      d.title,
+      c.document_id,
+      ts_rank(c.search_vector, p.q_and) as rank,
+      1 as tier
+    from public.knowledge_chunks c
+    join public.knowledge_documents d on d.id = c.document_id
+    cross join params p
+    where c.workspace_id = p_workspace_id
+      and d.enabled = true
+      and d.archived = false
+      and c.search_vector @@ p.q_and
+    union all
+    select
+      c.content,
+      d.title,
+      c.document_id,
+      ts_rank(c.search_vector, p.q_or) as rank,
+      2 as tier
+    from public.knowledge_chunks c
+    join public.knowledge_documents d on d.id = c.document_id
+    cross join params p
+    where c.workspace_id = p_workspace_id
+      and d.enabled = true
+      and d.archived = false
+      and c.search_vector @@ p.q_or
+      and not (c.search_vector @@ p.q_and)
+  )
+  select content, title, document_id, rank
+  from tiered
+  order by tier asc, rank desc
   limit p_limit;
 $$;
 ```
 
 Notes on the RPC:
 
-- `plainto_tsquery('english', p_query)` — plain-text query, English
-  stemming/stop-words.
+- Tier 1 `plainto_tsquery('english', p_query)` — plain-text query, English
+  stemming/stop-words, all lexemes required (AND).
+- Tier 2 `websearch_to_tsquery('english', p_query)` — natural language,
+  unquoted terms OR'd, quoted phrases AND'd; only fills slots tier 1
+  left empty, and never repeats a tier-1 row.
 - Only chunks whose document is `enabled` and not `archived` are
   returned; workspace filtering is by `p_workspace_id` on the chunks
   table.
 - Grant `EXECUTE` to `authenticated` and `service_role` as appropriate;
   revoke from `public` (same pattern as the Phase 2 RPCs).
 - If this RPC does not exist yet (migration not applied), the API falls
-  back to a PostgREST `textSearch('search_vector', query, {type: 'plain',
-  config: 'english'})` query with the same workspace / enabled /
-  not-archived filters and a client-side term-overlap rank. Retrieval
-  still works; ranking is cruder. The fallback is a safety net, not the
-  design.
+  back to a PostgREST `textSearch('search_vector', query, {type:
+  'websearch', config: 'english'})` query with the same workspace /
+  enabled / not-archived filters and a client-side term-overlap rank.
+  Retrieval still works; ranking is cruder. The fallback is a safety
+  net, not the design.
 
 ## Indexing (`reindexDocument`)
 

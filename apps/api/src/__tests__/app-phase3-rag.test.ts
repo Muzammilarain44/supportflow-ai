@@ -277,6 +277,25 @@ describe('retrieveKnowledge', () => {
     state.docs.find((d) => d.id === 'doc-archived')!.archived = true;
   });
 
+  it('natural question retrieves the chunk (OR semantics, not AND over every word)', async () => {
+    // Live E2E (migration 0009): "Hi, can you please confirm your refund
+    // policy?" returned 0 rows because plainto_tsquery ANDs every lexeme
+    // and the chunk contains none of hi / please / confirm / get.
+    // Migration 0011 keeps the strict AND tier first and fills the rest
+    // with websearch OR matches, so this question must retrieve doc-1.
+    const results = await retrieveKnowledge(fakeSupabase, 'ws-1', 'Hi, can you please confirm your refund policy?', 5);
+    expect(results.length).toBeGreaterThanOrEqual(1);
+    expect(results[0]!.documentId).toBe('doc-1');
+    expect(results[0]!.chunk).toContain('refund policy');
+  });
+
+  it('natural question retrieves the chunk via the textSearch fallback too', async () => {
+    state.rpcShouldFail = true;
+    const results = await retrieveKnowledge(fakeSupabase, 'ws-1', 'Hi, can you please confirm your refund policy?', 5);
+    expect(results.length).toBeGreaterThanOrEqual(1);
+    expect(results[0]!.documentId).toBe('doc-1');
+  });
+
   it('orders by relevance: chunks matching more query terms rank first', async () => {
     const results = await retrieveKnowledge(fakeSupabase, 'ws-1', 'refund policy', 5);
     expect(results.length).toBeGreaterThanOrEqual(2);

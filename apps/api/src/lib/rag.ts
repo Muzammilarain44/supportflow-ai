@@ -2,9 +2,11 @@
 // SupportFlow AI — Phase 3: lexical RAG (Worker B)
 //
 // LEXICAL ONLY — no vector / embedding retrieval in Phase 3. Retrieval is
-// PostgreSQL full-text search (plainto_tsquery('english', query) against
-// knowledge_chunks.search_vector, ordered by ts_rank desc), workspace
-// filtered, and only chunks whose document is enabled and not archived.
+// PostgreSQL full-text search (two-tier: strict plainto_tsquery AND match
+// first, then a websearch_to_tsquery OR fallback for natural questions —
+// see migration 0011) against knowledge_chunks.search_vector, ordered by
+// ts_rank with tier-1 matches first, workspace filtered, and only chunks
+// whose document is enabled and not archived.
 //
 // The ts_rank query runs through the SECURITY DEFINER RPC
 // `search_knowledge_chunks(p_workspace_id, p_query, p_limit)` — see
@@ -163,13 +165,15 @@ export async function retrieveKnowledge(
         rank: typeof row.rank === 'number' ? row.rank : 0,
       }));
   }
-  // Fallback path: PostgREST textSearch (plainto_tsquery, english config)
-  // with the same filters; rank is a client-side term-overlap score.
+  // Fallback path: PostgREST textSearch (websearch_to_tsquery, english
+  // config — same OR semantics as the RPC's tier 2, so natural questions
+  // still retrieve) with the same filters; rank is a client-side
+  // term-overlap score.
   const { data: rows, error: fallbackError } = await supabase
     .from('knowledge_chunks')
     .select('content,document_id,source_title,knowledge_documents!inner(title,enabled,archived)')
     .eq('workspace_id', workspaceId)
-    .textSearch('search_vector', query, { type: 'plain', config: 'english' });
+    .textSearch('search_vector', query, { type: 'websearch', config: 'english' });
   if (fallbackError || !rows) return [];
   const scored = (rows as Array<{
     content: string;

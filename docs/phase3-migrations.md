@@ -1,7 +1,7 @@
-# Phase 3 migrations — 0009 (required) + 0010 (optional)
+# Phase 3 migrations — 0009 (required) + 0010 (optional) + 0011 (required fix)
 
 Apply in Supabase Dashboard > SQL Editor, in order, after
-`0008_phase2_1_widget_origins.sql`. Both files are idempotent
+`0008_phase2_1_widget_origins.sql`. All files are idempotent
 (`IF NOT EXISTS`, `DROP ... IF EXISTS`, `CREATE OR REPLACE`).
 
 > **Status: UNAPPLIED and UNVERIFIED live.** Nothing in this document
@@ -75,10 +75,12 @@ They are the dispatcher's only interface to the outbox.
   → rows of `(chunk text, document_title text, document_id uuid, rank real)`.
   `SECURITY DEFINER`, `STABLE`, `set search_path = public`, revoked
   from `public`, granted to `authenticated` and `service_role`. Lexical
-  full-text search only: `plainto_tsquery('english', p_query)` against
-  `knowledge_chunks.search_vector`, joined to `knowledge_documents`,
-  filtered to the given workspace with `enabled=true` and
-  `archived=false`, ordered by `ts_rank` desc. This is Worker B's
+  full-text search only: tier 1 is the strict `plainto_tsquery`
+  AND match, tier 2 (migration 0011) fills remaining slots with
+  `websearch_to_tsquery` OR matches for natural questions — see
+  `0011_phase3_kb_retrieval_or_fallback.sql` and `docs/phase3-rag.md`.
+  Filtered to the given workspace with `enabled=true` and
+  `archived=false`, ordered by tier then `ts_rank` desc. This is Worker B's
   primary retrieval path (`retrieveKnowledge` in
   `apps/api/src/lib/rag.ts`, exact SQL in `docs/phase3-rag.md`); if the
   RPC does not exist yet, the API falls back to a PostgREST `textSearch`
@@ -103,12 +105,29 @@ and nothing in 0009 depends on it.
 > a later phase actually implements vector search. Applying it only
 > requires the pgvector extension to be available on the project.
 
+## 0011 — `0011_phase3_kb_retrieval_or_fallback.sql` (required fix)
+
+Replaces `search_knowledge_chunks` (same signature, same grants) with a
+two-tier version. Live E2E found the 0009 version returned 0 rows for
+natural questions: `plainto_tsquery` ANDs every lexeme, so "Hi, can you
+please confirm your refund policy?" matched nothing. Tier 1 is the
+unchanged strict AND query (keyword queries behave exactly as before);
+tier 2 fills remaining slots with `websearch_to_tsquery` OR matches
+(unquoted terms OR'd, quoted phrases AND'd), excluding rows already in
+tier 1. Workspace filtering and enabled / non-archived-only documents
+are unchanged in both tiers. No tables, columns, policies or data
+change. Idempotent (`CREATE OR REPLACE` + same grants) — safe to
+re-apply.
+
 ## How to apply (live, by hand — not done by this worker)
 
 1. Supabase Dashboard → SQL Editor → paste `0009_phase3_ai_platform.sql`
    → Run. Confirm no errors.
 2. Optionally paste `0010_phase3_vector_optional.sql` → Run (only if
    vector search is planned; otherwise skip).
+3. Paste `0011_phase3_kb_retrieval_or_fallback.sql` → Run. Confirm no
+   errors. (Required: without it, natural-language questions retrieve
+   nothing.)
 3. Verify: the 7 tables exist with RLS enabled; the 3 RPCs exist and
    are granted to `service_role` only; `select * from
    public.automation_events` as an authenticated member still works

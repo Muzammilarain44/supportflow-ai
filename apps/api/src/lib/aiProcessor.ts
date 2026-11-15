@@ -17,6 +17,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import {
   generateCompletion,
   aiConfigFromEnv,
+  selectProviders,
   AiUnavailableError,
   type AiConfig,
   type CompletionResult,
@@ -217,6 +218,38 @@ export async function processAutomationEvent(
     return { outcome: 'skipped', executionId };
   }
 
+  // Per-workspace provider order wins over the environment default: the
+  // workspace's ai_settings.provider_order is the order generation
+  // actually uses. An unset/empty row order falls back to the env config
+  // (AI_PROVIDER_ORDER, default groq,gemini). selectProviders() drops
+  // unknown names and defaults when nothing usable remains.
+  const settingsOrder = (settingsRow as AiSettingsRow | null)?.provider_order;
+  const effectiveConfig: AiConfig =
+    Array.isArray(settingsOrder) && settingsOrder.length > 0
+      ? { ...config, providerOrder: selectProviders(settingsOrder) }
+      : config;
+
+  // SUGGESTION IDEMPOTENCY: a redelivered event must not create a second
+  // suggestion (or a second provider call) for the same message. The auto
+  // branch dedupes via client_message_id `ai-<event id>`; the suggestion
+  // branch had no equivalent, so a duplicate process-event created a
+  // second suggestion and a second success execution. Check first and
+  // return the existing draft when one is already stored for this
+  // message — no provider call, no new execution row.
+  if (mode === 'suggestion') {
+    const { data: existingSuggestion } = await supabase
+      .from('ai_suggestions')
+      .select('id')
+      .eq('workspace_id', event.workspace_id)
+      .eq('conversation_id', msg.conversation_id)
+      .eq('message_id', msg.id)
+      .maybeSingle();
+    const existingId = (existingSuggestion as { id: string } | null)?.id;
+    if (existingId) {
+      return { outcome: 'suggestion_created', id: existingId };
+    }
+  }
+
   const escalate = async (reason: string, executionStatus: 'escalated' | 'failed'): Promise<ProcessorResult> => {
     try {
       await escalateConversation(supabase, {
@@ -291,7 +324,7 @@ export async function processAutomationEvent(
 
   let completion: CompletionResult;
   try {
-    completion = await generate({ messages: promptMessages }, config);
+    completion = await generate({ messages: promptMessages }, effectiveConfig);
   } catch (e) {
     // Provider failure ALWAYS escalates — never silently drops the message.
     const detail =
